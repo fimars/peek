@@ -51,11 +51,13 @@ func (a *app) explainable() (cm git.Commit, id, scope string) {
 	return cm, id, scope
 }
 
-func (a *app) explainButton(c *ui.Context) {
+func (a *app) explainButton(c *ui.Context) { drawTool(c, "explain", a.explainTool(c)) }
+
+// explainTool is the Explain button as the explanation's state has it.
+func (a *app) explainTool(c *ui.Context) toolButton {
 	e := &a.explain
 	if e.running {
-		e.activity(c, "explain", "Explaining…", agentDefOf(e.agent).name+" is explaining the changes", "Stop Explaining")
-		return
+		return e.activity(c, "Explaining…", agentDefOf(e.agent).name+" is explaining the changes", "Stop Explaining")
 	}
 	def := agentDefOf(a.agentKind())
 	cm, id, scope := a.explainable()
@@ -72,13 +74,13 @@ func (a *app) explainButton(c *ui.Context) {
 	case id == "":
 		tooltip = "Nothing to explain"
 	}
-	ui.Button(c.Key("explain"), label).Shrink(0).Disabled(a.changing() || id == "").Tooltip(tooltip).OnClick(func() {
+	return toolButton{label: label, tooltip: tooltip, disabled: a.changing() || id == "", click: func() {
 		if open {
 			e.open = true
 			return
 		}
 		a.startExplain()
-	})
+	}}
 }
 
 // startExplain has the chosen agent explain the changes of the entry shown.

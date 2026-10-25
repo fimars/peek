@@ -31,3 +31,13 @@ func (a *app) agentButton(c *ui.Context) {
 		ui.Icon(c, chevronIcon).Size(8, 8).TextColor(t.TextMuted)
 	})
 }
+
+// toggleAgent chooses the other agent, as the toolbar's agent button does
+// where AppKit's toolbar has no menu of its own.
+func (a *app) toggleAgent() {
+	if a.agentKind() == agentGrok {
+		a.chooseAgent(agentCodex)
+		return
+	}
+	a.chooseAgent(agentGrok)
+}

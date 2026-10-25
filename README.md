@@ -171,15 +171,13 @@ go tool mygo build
 CGO_ENABLED=0 go test ./...
 ```
 
-The screenshots above are drawn by `TestSnapshot` over a clone of [Dify](https://github.com/langgenius/dify) with `main` at commit `9dc53da` ([#44561](https://github.com/langgenius/dify/pull/44561)), whose `origin` is the GitHub repository:
+The screenshots above are of the installed Peek's window, over a clone of [Dify](https://github.com/langgenius/dify) with `main` at commit `9dc53da` ([#44561](https://github.com/langgenius/dify/pull/44561)), whose `origin` is the GitHub repository and `origin/main` 58 commits on: that commit in Changes, and `dify-agent-runtime/internal/agentcli/config.go` in Files, in the light and the dark appearance, the window as the screen shows it, its sidebars' glass over the desktop's wallpaper, with its shadow. Take them again, into `docs/`, from a clone of Dify of your own:
 
 ```bash
-PEEK_REPO=path/to/dify PEEK_OUT=$PWD/docs/changes PEEK_COMMIT=1 go test ./internal/app -run 'Snapshot$'
+scripts/screenshots.sh path/to/dify
 ```
 
-```bash
-PEEK_REPO=path/to/dify PEEK_OUT=$PWD/docs/files PEEK_MODE=files PEEK_COMMIT=1 PEEK_FILE=dify-agent-runtime/internal/agentcli/config.go go test ./internal/app -run 'Snapshot$'
-```
+It needs Screen Recording for the app it runs in, and switches the appearance through System Events; Peek's saved projects and window, and the appearance, are put back after.
 
 ## License
 

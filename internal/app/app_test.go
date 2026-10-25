@@ -7,9 +7,11 @@ import (
 	"peek/internal/git"
 	"peek/internal/testutil"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -95,6 +97,55 @@ func TestFold(t *testing.T) {
 	}
 	if first := tree.files()[0]; first != "src/ui/a.go" {
 		t.Errorf("first file %q, want src/ui/a.go", first)
+	}
+}
+
+// replace keeps the folders open and knows the chosen file's row before
+// the outline builds the new tree's rows, which then put it there.
+func TestReplaceTree(t *testing.T) {
+	tree := newPathTree()
+	tree.set(fold([]string{"a/one.go", "b/two.go", "main.go"}))
+	tt := ui.NewTester(func(c *ui.Context) { tree.view(c, "Files", func(string, bool) {}) }, 400, 400)
+	tree.state.Open.Add("a")
+	tree.show("b/two.go")
+	tt.Frame()
+	tree.sync()
+	tree.replace(fold([]string{"a/one.go", "a/zero.go", "b/two.go", "main.go"}))
+	if !tree.state.Open.Has("a") || !tree.state.Open.Has("b") || tree.row != 4 {
+		t.Fatalf("after replace: open %v, row %d", slices.Collect(tree.state.Open.All()), tree.row)
+	}
+	tt.Frame()
+	if got := tree.chosen(); got != "b/two.go" {
+		t.Errorf("the outline's row %d holds %q, want b/two.go", tree.row, got)
+	}
+}
+
+// show chooses the file before the outline builds its row, and clearing
+// the filter keeps it chosen, so that no pass shows the tree unchosen.
+func TestShowChoosesAtOnce(t *testing.T) {
+	tree := newPathTree()
+	tree.set(fold([]string{"a/one.go", "b/two.go", "main.go"}))
+	tt := ui.NewTester(func(c *ui.Context) {
+		tree.applyFilter()
+		tree.view(c, "Files", func(string, bool) {})
+	}, 400, 400)
+	tt.Frame()
+	tree.show("b/two.go")
+	if tree.row != 2 {
+		t.Errorf("show chose row %d, want 2 before the pass", tree.row)
+	}
+	tt.Frame()
+	tree.filter = "two"
+	tt.Frame()
+	tree.sync()
+	tree.filter = ""
+	tree.applyFilter()
+	if tree.row != 2 {
+		t.Errorf("clearing the filter chose row %d, want 2 before the pass", tree.row)
+	}
+	tt.Frame()
+	if got := tree.chosen(); got != "b/two.go" {
+		t.Errorf("the outline's row %d holds %q, want b/two.go", tree.row, got)
 	}
 }
 
@@ -243,5 +294,45 @@ func TestCommitMessageShows(t *testing.T) {
 	cm, _ := a.current()
 	if cm.Subject != "Add the docs" || !tt.HasText("Explain why the docs moved.") || !tt.HasText(cm.Short) || !tt.HasText("Ada") {
 		t.Fatalf("commit %q, texts %q", cm.Subject, tt.Texts())
+	}
+}
+
+// AppKit's toolbar shows the agent, the work on the changes and the page
+// on the code host, which the view's toolbar shows where there is none.
+func TestNativeToolbarShowsTheAgentAndHost(t *testing.T) {
+	a, _ := testApp(t, testutil.Repo(t), nil)
+	a.host = git.Host{Kind: git.KindGitLab, Page: "https://gitlab.com/ada/peek"}
+	var spec *mygo.Toolbar
+	tt := ui.NewTester(func(c *ui.Context) { spec = a.toolbarSpec(c) }, 1200, 800)
+	tt.Frame()
+	if spec == nil {
+		t.Fatal("no toolbar")
+	}
+	item := func(id string) mygo.ToolbarItem {
+		t.Helper()
+		for _, it := range spec.Items {
+			if it.ID == id {
+				return it
+			}
+		}
+		t.Fatalf("no toolbar item %q", id)
+		return mygo.ToolbarItem{}
+	}
+	if got := item("agent").Title; got != "Codex" {
+		t.Fatalf("agent %q, want Codex", got)
+	}
+	if got := item("web").Label; got != "Open on GitLab" {
+		t.Fatalf("web label %q, want GitLab", got)
+	}
+	if got := item("explain").ToolTip; !strings.Contains(got, "with Codex") {
+		t.Fatalf("explain tooltip %q", got)
+	}
+	a.toggleAgent()
+	tt.Frame()
+	if got := item("agent").Title; got != "Grok Build" {
+		t.Fatalf("agent %q, want Grok Build", got)
+	}
+	if got := item("explain").ToolTip; !strings.Contains(got, "with Grok Build") {
+		t.Fatalf("explain tooltip %q", got)
 	}
 }
