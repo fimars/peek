@@ -13,6 +13,11 @@ holds the repositories and fake CLIs the tests share.
 Follow Apple's design for native Mac apps: the window, controls, menus and
 behavior should look and work as macOS's own do.
 
+## Before committing
+
+Tidy the changed Go code and tests with
+`.agents/skills/go-style-precommit/SKILL.md`, then run its checks.
+
 ## After every change
 
 Once the tests pass, build the app again, put it in place of the installed
