@@ -25,7 +25,7 @@ func (a *app) agentButton(c *ui.Context) {
 		}
 	})
 	b.Children(func() {
-		ui.Icon(c, def.icon).Size(14, 14)
+		ui.Icon(c, def.icon).Size(16, 16)
 		ui.Icon(c, chevronIcon).Size(8, 8).TextColor(t.TextMuted)
 	})
 }
