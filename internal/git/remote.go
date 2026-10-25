@@ -25,6 +25,39 @@ func upstreamRemote(ctx context.Context, repo string) (remote, upstream string) 
 	return remote, upstream
 }
 
+// TrackedRemote is the remote the branch checked out tracks, "" where it
+// tracks none or a local branch.
+func TrackedRemote(repo string) string {
+	branch, err := git(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil || branch == "" {
+		return ""
+	}
+	remote, _ := git(repo, "config", "--get", "branch."+branch+".remote")
+	if remote == "." {
+		return ""
+	}
+	return remote
+}
+
+// PushRemote is the remote Peek pushes and fetches by: origin where the
+// repository has it, else the sole one, "" where neither.
+func PushRemote(repo string) string {
+	out, err := git(repo, "remote")
+	if err != nil {
+		return ""
+	}
+	remotes := strings.Fields(out)
+	for _, r := range remotes {
+		if r == "origin" {
+			return r
+		}
+	}
+	if len(remotes) == 1 {
+		return remotes[0]
+	}
+	return ""
+}
+
 // BehindUpstream counts the commits of the branch's upstream, as last
 // fetched, that the branch has not, and names the upstream; 0 and "" for
 // a branch that tracks none. It reads cached refs, without network I/O.

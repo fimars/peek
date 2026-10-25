@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"peek/internal/git"
 	"peek/internal/review"
 	"time"
@@ -14,8 +15,8 @@ type history struct {
 	commits   []git.Commit // the work tree's entry first, then the branch's
 	changes   []git.Change // the work tree's
 	branch    string
-	github    string // the repository's page on GitHub, "" for none
-	branchURL string // the branch's page on GitHub, "" for none
+	host      git.Host // where the remotes are, for its pages
+	branchURL string   // the branch's page there, "" for none
 	canPush   bool
 	behind    int    // the upstream's commits the branch has not
 	upstream  string // the upstream's name, where it is behind
@@ -24,7 +25,11 @@ type history struct {
 	err       error
 }
 
-func readHistory(repo string) history {
+// readHistory reads the history of the repository, and of the merge
+// request shown where one is: its changes as a range from its base to its
+// head, in place of the branch's own. instance is the GitLab instance the
+// user named for the repository, "" to tell it from the remotes.
+func readHistory(repo string, mr *mergeRequestInfo, instance string) history {
 	commits, err := git.LoadCommits(repo, 500)
 	changes, _ := git.LoadWorktreeChanges(repo)
 	// The work tree's entry always shows, for its files to read as they
@@ -42,6 +47,17 @@ func readHistory(repo string) history {
 			Summary: count(r.Commits, "commit") + " since " + r.Onto,
 			Body:    "The changes of the branch since it left " + r.Onto + ", at " + r.Base[:7]})
 	}
+	if mr != nil {
+		// The merge request's changes, in place of the branch's: the
+		// commits from where it left its target branch to its head.
+		subject := "Merge Request " + fmt.Sprintf("!%d", mr.number)
+		if mr.title != "" {
+			subject += " " + mr.title
+		}
+		entries = append(entries, git.Commit{Hash: git.Range(mr.base, mr.head), Subject: subject,
+			Summary: mr.branch + " into " + mr.into,
+			Body:    "The changes of " + mr.branch + " into " + mr.into + ", at " + mr.head[:7]})
+	}
 	commits = append(entries, commits...)
 	review, reviewErr := review.ReadSnapshot(repo)
 	behind, upstream := git.BehindUpstream(repo)
@@ -49,8 +65,16 @@ func readHistory(repo string) history {
 	if reviewErr != nil {
 		reviewNote = reviewErr.Error()
 	}
-	return history{commits: commits, changes: changes, branch: git.CurrentBranch(repo), github: git.GitHubURL(repo), branchURL: git.BranchGitHubURL(repo),
-		canPush: len(changes) > 0 || git.HasUnpushedCommits(repo), behind: behind, upstream: upstream, review: review, reviewErr: reviewNote, err: err}
+	host := git.CodeHost(repo, git.GitLabHosts())
+	if instance != "" {
+		// The user named the instance, whose GitLab it is whatever its
+		// remotes' names say: the project's path is the remotes'.
+		host = git.Host{Kind: git.KindGitLab, Page: "https://" + instance + "/" + git.RemoteProjectPath(repo)}
+	}
+	return history{commits: commits, changes: changes, branch: git.CurrentBranch(repo), host: host,
+		branchURL: git.BranchURL(repo, git.GitLabHosts()),
+		canPush:   len(changes) > 0 || git.HasUnpushedCommits(repo), behind: behind, upstream: upstream,
+		review: review, reviewErr: reviewNote, err: err}
 }
 
 // refresh reads the history and the work tree again, as the watch asks
@@ -61,8 +85,10 @@ func (a *app) refresh() {
 		return
 	}
 	a.refreshing = true
+	mr, instance := a.mergeRequestForRead(), a.instance
+	repo := a.repo
 	a.background(func() func() {
-		h := readHistory(a.repo)
+		h := readHistory(repo, mr, instance)
 		return func() {
 			a.refreshing = false
 			if a.refreshAgain {
@@ -83,9 +109,15 @@ func (a *app) applyHistory(h history) {
 	chosen, wasChosen := a.hashAt(a.commitRow)
 	shown, wasShown := a.hashAt(a.loadedRow)
 	filesShown := a.filesFor >= 0 && a.filesFor == a.loadedRow
-	a.commits, a.branch, a.github, a.branchURL, a.err = h.commits, h.branch, h.github, h.branchURL, ""
+	a.commits, a.branch, a.host, a.branchURL, a.err = h.commits, h.branch, h.host, h.branchURL, ""
 	a.canPush, a.behind, a.upstream, a.dirty = h.canPush, h.behind, h.upstream, len(h.changes)
-	a.updateReviewSource(h.review, h.reviewErr)
+	// A merge request's changes are what Review reviews where one shows,
+	// its branch's own left out.
+	if snapshot, note := a.mergeRequestSnapshot(); a.mergeRequest != nil {
+		a.updateReviewSource(snapshot, note)
+	} else {
+		a.updateReviewSource(h.review, h.reviewErr)
+	}
 	a.commitRow = -1
 	if len(h.commits) > 0 {
 		a.commitRow = 0
@@ -94,10 +126,17 @@ func (a *app) applyHistory(h history) {
 		a.commitRow = row
 	}
 	// A branch just checked out shows what it changes, where it has
-	// nothing uncommitted to show first.
+	// nothing uncommitted to show first; a merge request just fetched,
+	// its own changes.
 	if a.landOnBranch && h.branch == a.branch {
 		a.landOnBranch = false
 		a.commitRow = landingRow(h)
+	}
+	if a.landOnMergeRequest {
+		a.landOnMergeRequest = false
+		if row := a.mergeRequestRow(); row >= 0 {
+			a.commitRow, a.loadedRow = row, -1
+		}
 	}
 	if !wasShown {
 		a.worktreeChanges = h.changes

@@ -204,15 +204,15 @@ func TestGitHubButton(t *testing.T) {
 	repo := testutil.Repo(t)
 	a, tt := testApp(t, repo, nil)
 	settle(tt)
-	if a.github != "" || tt.HasText("Open on GitHub") {
+	if !a.host.None() || tt.HasText("Open on GitHub") {
 		t.Fatal("GitHub button without a remote")
 	}
 	testutil.Git(t, repo, "remote", "add", "upstream", "https://github.com/egoist/peek.git")
 	testutil.Git(t, repo, "remote", "add", "origin", "git@github.com:hyoban/peek.git")
 	a.refresh()
 	settle(tt)
-	if a.github != "https://github.com/hyoban/peek" {
-		t.Errorf("github %q, want origin's page", a.github)
+	if a.host.Page != "https://github.com/hyoban/peek" {
+		t.Errorf("host %q, want origin's page", a.host.Page)
 	}
 }
 

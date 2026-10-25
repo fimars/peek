@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -94,6 +95,57 @@ esac
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return log
+}
+
+// FakeGlab puts a glab on the PATH that lists one open merge request, and
+// signs in to the host of github's page: the merge request's head is a
+// branch the repository has pushed, and checking it out makes a branch of
+// its number. It records what it was asked, and returns the log's path.
+func FakeGlab(t *testing.T, github string, number int, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "log")
+	host := strings.TrimPrefix(github, "https://")
+	script := `#!/bin/sh
+echo "$@" >> "` + log + `"
+case "$1 $2" in
+  "auth status")
+    printf '{"hosts":[{"host":"` + host + `","state":"success","user":"ada"}]}'
+    exit 0 ;;
+  "mr list")
+    printf '[{"iid":` + strconv.Itoa(number) + `,"title":"Add the merge request","source_branch":"` + branch + `","target_branch":"main","draft":false,"author":{"username":"ada"}}]'
+    exit 0 ;;
+  "mr checkout")
+    git switch -q -c "mr-$3" ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "glab"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// MergeRequest pushes a branch to the remote as merge request number, and
+// publishes its head the way GitLab does: it returns the head, and the
+// commit it left main at.
+func MergeRequest(t *testing.T, repo, remote, branch string, number int) (head, base string) {
+	t.Helper()
+	base = Git(t, repo, "rev-parse", "HEAD")
+	Git(t, repo, "switch", "-q", "-c", branch)
+	if err := os.WriteFile(filepath.Join(repo, "mr.txt"), []byte(branch+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	Git(t, repo, "add", "mr.txt")
+	Git(t, repo, "commit", "-q", "-m", "Merge request work")
+	// To the remote itself, as a test points origin at a host the network
+	// does not have.
+	Git(t, repo, "push", "-q", remote, branch)
+	head = Git(t, repo, "rev-parse", "HEAD")
+	Git(t, remote, "update-ref", "refs/merge-requests/"+strconv.Itoa(number)+"/head", head)
+	Git(t, repo, "switch", "-q", "main")
+	return head, base
 }
 
 // RemoteWork pushes a commit to the remote from another clone, as a

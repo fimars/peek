@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	neturl "net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -38,11 +37,11 @@ func GitHubURL(repo string) string {
 	return found
 }
 
-// BranchGitHubURL returns the GitHub page of the branch checked out, on
-// the remote it tracks, "" where it tracks none on GitHub, as a branch
-// never pushed or a detached HEAD. The remote's default branch has the
-// repository's own page.
-func BranchGitHubURL(repo string) string {
+// BranchURL returns the page of the branch checked out on the host of the
+// remote it tracks, "" where it tracks none, as a branch never pushed or
+// a detached HEAD. The remote's default branch has the repository's own
+// page.
+func BranchURL(repo string, glabHosts map[string]bool) string {
 	head, err := git(repo, "symbolic-ref", "--quiet", "HEAD")
 	if err != nil {
 		return ""
@@ -54,18 +53,17 @@ func BranchGitHubURL(repo string) string {
 		return ""
 	}
 	url, err := git(repo, "config", "--get", "remote."+remote+".url")
-	page := githubPage(strings.TrimSpace(url))
-	if err != nil || page == "" {
+	if err != nil {
+		return ""
+	}
+	host := hostOf(strings.TrimSpace(url), glabHosts)
+	if host.None() {
 		return ""
 	}
 	if branch == remoteDefaultBranch(repo, remote) {
-		return page
+		return host.Page
 	}
-	parts := strings.Split(branch, "/")
-	for i, p := range parts {
-		parts[i] = neturl.PathEscape(p)
-	}
-	return page + "/tree/" + strings.Join(parts, "/")
+	return host.BranchURL(branch)
 }
 
 // remoteDefaultBranch returns the branch the remote's HEAD names, or else
@@ -85,17 +83,11 @@ func remoteDefaultBranch(repo, remote string) string {
 // githubPage returns the page of a GitHub remote's URL, as SSH, scp-like
 // and HTTPS URLs name it, "" for another host's.
 func githubPage(url string) string {
-	rest, ok := "", false
-	for _, prefix := range []string{"git@github.com:", "ssh://git@github.com/", "https://github.com/", "http://github.com/", "git://github.com/"} {
-		if rest, ok = strings.CutPrefix(url, prefix); ok {
-			break
-		}
-	}
-	rest = strings.TrimSuffix(strings.TrimSuffix(rest, "/"), ".git")
-	if !ok || strings.Count(rest, "/") != 1 || strings.HasPrefix(rest, "/") || strings.HasSuffix(rest, "/") {
+	host := hostOf(url, nil)
+	if host.Kind != KindGitHub {
 		return ""
 	}
-	return "https://github.com/" + rest
+	return host.Page
 }
 
 // PullRequest is an open pull request of the repository, as gh lists it.

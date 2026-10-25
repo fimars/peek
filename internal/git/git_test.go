@@ -34,28 +34,28 @@ func TestBranchGitHubURL(t *testing.T) {
 	testutil.Git(t, repo, "remote", "add", "origin", "git@github.com:hyoban/peek.git")
 	testutil.Git(t, repo, "remote", "add", "fork", "https://github.com/someone/peek.git")
 	testutil.Git(t, repo, "checkout", "-q", "-b", "feat/a#b")
-	if got := BranchGitHubURL(repo); got != "" {
+	if got := BranchURL(repo, nil); got != "" {
 		t.Errorf("untracked branch's page %q, want none", got)
 	}
 	testutil.Git(t, repo, "config", "branch.feat/a#b.remote", "fork")
 	testutil.Git(t, repo, "config", "branch.feat/a#b.merge", "refs/heads/feat/a#b")
-	if got, want := BranchGitHubURL(repo), "https://github.com/someone/peek/tree/feat/a%23b"; got != want {
+	if got, want := BranchURL(repo, nil), "https://github.com/someone/peek/tree/feat/a%23b"; got != want {
 		t.Errorf("tracked branch's page %q, want %q", got, want)
 	}
 	testutil.Git(t, repo, "update-ref", "refs/remotes/fork/develop", "HEAD")
 	testutil.Git(t, repo, "symbolic-ref", "refs/remotes/fork/HEAD", "refs/remotes/fork/develop")
 	testutil.Git(t, repo, "config", "branch.feat/a#b.merge", "refs/heads/develop")
-	if got, want := BranchGitHubURL(repo), "https://github.com/someone/peek"; got != want {
+	if got, want := BranchURL(repo, nil), "https://github.com/someone/peek"; got != want {
 		t.Errorf("default branch's page %q, want %q", got, want)
 	}
 	testutil.Git(t, repo, "symbolic-ref", "--delete", "refs/remotes/fork/HEAD")
 	testutil.Git(t, repo, "config", "branch.feat/a#b.merge", "refs/heads/main")
 	testutil.Git(t, repo, "update-ref", "refs/remotes/fork/main", "HEAD")
-	if got, want := BranchGitHubURL(repo), "https://github.com/someone/peek"; got != want {
+	if got, want := BranchURL(repo, nil), "https://github.com/someone/peek"; got != want {
 		t.Errorf("main's page without the remote's HEAD %q, want %q", got, want)
 	}
 	testutil.Git(t, repo, "checkout", "-q", "--detach")
-	if got := BranchGitHubURL(repo); got != "" {
+	if got := BranchURL(repo, nil); got != "" {
 		t.Errorf("detached HEAD's page %q, want none", got)
 	}
 }

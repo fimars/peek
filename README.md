@@ -38,6 +38,7 @@ All of the commit's files, to read any of them as it was then.
 - Authors' and co-authors' avatars, the commit's details and message on hover, references such as `#123` linked to their pull request or issue, and a link to the branch on GitHub
 - One window for every repository, switched from the project's name in the toolbar or the menu bar, each kept as you left it, and the repositories open at quitting opened again
 - Switch branches, or check out a pull request by number or link with the [GitHub CLI](https://cli.github.com), from the branch in the toolbar
+- Show a GitLab merge request's changes by number or link with the [GitLab CLI](https://gitlab.com/gitlab-org/cli), without checking anything out, and review them as its own range
 - Fetches the branch's remote every few minutes, shows how many new commits it has beside the branch, and pulls them by fast-forward with a click
 - **Ship**: commit all changes with a Codex-written message and push, from the history's toolbar
 - **Review**: have Codex review the uncommitted changes or the unpushed commits, from the history's toolbar
@@ -136,6 +137,34 @@ a failed review does not prevent a later push. The two operations cannot run
 at the same time. Review has no assembled-diff size limit; Git metadata output
 is still bounded. Dirty submodules must be committed or cleaned before
 reviewing, including untracked files inside them.
+
+### Merge requests
+
+Where the repository's remote is on GitLab, the branch switcher
+(<kbd>⌘</kbd> <kbd>B</kbd>) lists the project's open merge requests, and a
+merge request's number or page shows it too. Choosing one fetches its head to
+`refs/peek/merge-requests/<number>` and its target branch, and shows the
+changes from where they left off at the top of the history. Nothing is
+checked out, so the branch and the work tree stay as they are, and a bar over
+the history says which merge request shows and closes it for the branch's own.
+
+**Review** then reviews the merge request's commits alone, as a fixed range
+from its base to its head, rather than the uncommitted changes. Its page, its
+files' pages and its lines' links are GitLab's, as GitHub's are for a GitHub
+remote.
+
+GitLab needs the [GitLab CLI](https://gitlab.com/gitlab-org/cli), signed in
+with `glab auth login`, for the list and the checkouts; the refs themselves
+are fetched with `git`, so a private project needs the credentials `git`
+already has. The host is GitLab's when the remote's name is `gitlab.com`,
+starts with `gitlab.`, or is one `glab` is signed in to.
+
+A self-hosted instance whose name says nothing of GitLab is the user's to
+name: the switcher's **GitLab** row sets it, or pasting a merge request's
+page does, as its address names the instance. Peek keeps the instance with
+the project, for the next launches to list its merge requests without
+asking again. Without `glab`, the changes still show for a project `git` can
+reach, and the list does not.
 
 To build `Peek.app` and a `.dmg` into `build/`:
 

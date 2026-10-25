@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/sha1"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -110,16 +111,31 @@ func TestLineReferences(t *testing.T) {
 		t.Errorf("reference to an old line %q", got)
 	}
 	// GitHub anchors a commit's file by the SHA-256 of its path.
-	link := lineLink("https://github.com/o/r", "abc", ch, editor.DiffLineRange{Side: editor.DiffOld, Start: 0, End: 1})
+	github := git.Host{Kind: git.KindGitHub, Page: "https://github.com/o/r"}
+	link := lineLink(github, "abc", ch, editor.DiffLineRange{Side: editor.DiffOld, Start: 0, End: 1})
 	want := fmt.Sprintf("https://github.com/o/r/commit/abc#diff-%xL1-L2", sha256.Sum256([]byte("new.go")))
 	if link != want {
 		t.Errorf("link %q, want %q", link, want)
 	}
 	// A branch's changes, on its comparing page.
-	link = lineLink("https://github.com/o/r", git.Range("abc", "def"), ch, editor.DiffLineRange{Side: editor.DiffNew, Start: 4, End: 4})
+	link = lineLink(github, git.Range("abc", "def"), ch, editor.DiffLineRange{Side: editor.DiffNew, Start: 4, End: 4})
 	want = fmt.Sprintf("https://github.com/o/r/compare/abc...def#diff-%xR5", sha256.Sum256([]byte("new.go")))
 	if link != want {
 		t.Errorf("link %q, want %q", link, want)
+	}
+	// GitLab anchors a commit's file by the first 9 hex digits of its
+	// path's SHA-1, and numbers an added line with A.
+	gitlab := git.Host{Kind: git.KindGitLab, Page: "https://gitlab.com/o/r"}
+	sum := fmt.Sprintf("%x", sha1.Sum([]byte("new.go")))[:9]
+	link = lineLink(gitlab, git.Range("abc", "def"), ch, editor.DiffLineRange{Side: editor.DiffNew, Start: 4, End: 4})
+	want = fmt.Sprintf("https://gitlab.com/o/r/-/compare/abc...def#line_%s_A5", sum)
+	if link != want {
+		t.Errorf("GitLab link %q, want %q", link, want)
+	}
+	link = lineLink(gitlab, "abc", ch, editor.DiffLineRange{Side: editor.DiffOld, Start: 2, End: 2})
+	want = fmt.Sprintf("https://gitlab.com/o/r/-/commit/abc#line_%s_3", sum)
+	if link != want {
+		t.Errorf("GitLab link to an old line %q, want %q", link, want)
 	}
 }
 

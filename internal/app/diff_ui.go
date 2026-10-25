@@ -1,7 +1,6 @@
 package app
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"slices"
 	"strings"
@@ -205,23 +204,10 @@ func lineReference(ch git.Change, r editor.DiffLineRange) string {
 	return p + ":" + lines
 }
 
-// lineLink is the address of lines of a commit's diff on GitHub, as its
-// commit page anchors them, or the branch's comparing page for its
-// changes: L for the old side's, R for the new one's.
-func lineLink(github, hash string, ch git.Change, r editor.DiffLineRange) string {
-	page := "commit/" + hash
-	if base, head, ok := git.SplitRange(hash); ok {
-		page = "compare/" + base + "..." + head
-	}
-	side := "R"
-	if r.Side == editor.DiffOld {
-		side = "L"
-	}
-	anchor := fmt.Sprintf("%s%d", side, r.Start+1)
-	if r.End > r.Start {
-		anchor += fmt.Sprintf("-%s%d", side, r.End+1)
-	}
-	return fmt.Sprintf("%s/%s#diff-%x%s", github, page, sha256.Sum256([]byte(ch.Path)), anchor)
+// lineLink is the address of lines of a file in a commit's changes, as the
+// host's pages anchor them, "" where it has no page for them.
+func lineLink(host git.Host, hash string, ch git.Change, r editor.DiffLineRange) string {
+	return host.LinesURL(hash, ch.Path, r.Side == editor.DiffOld, r.Start, r.End)
 }
 
 // linesButton is the lines selected by their numbers in the file's
@@ -256,13 +242,16 @@ func (a *app) linesMenu(c *ui.Context, m *ui.Menu, d *fileDiff) {
 		c.Toast("Reference Copied")
 	}
 	cm, _ := a.current()
-	online := ok && a.github != "" && cm.Hash != git.Worktree
-	if m.Item("Copy GitHub Link to Lines").Disabled(!online).Chosen() {
-		services.WriteClipboard(lineLink(a.github, cm.Hash, d.change, r))
+	link := ""
+	if ok && cm.Hash != git.Worktree {
+		link = lineLink(a.host, cm.Hash, d.change, r)
+	}
+	if m.Item("Copy " + a.host.Name() + " Link to Lines").Disabled(link == "").Chosen() {
+		services.WriteClipboard(link)
 		c.Toast("Link Copied")
 	}
-	if m.Item("Open Lines on GitHub").Disabled(!online).Chosen() {
-		services.OpenURL(lineLink(a.github, cm.Hash, d.change, r))
+	if m.Item("Open Lines on " + a.host.Name()).Disabled(link == "").Chosen() {
+		services.OpenURL(link)
 	}
 	if m.Item("Comment on Lines").Disabled(!ok).Chosen() {
 		a.addComment(d, r)

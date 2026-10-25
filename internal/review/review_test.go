@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"peek/internal/testutil"
+	"strings"
 	"testing"
 )
 
@@ -184,4 +185,54 @@ func TestCodexReviewSmoke(t *testing.T) {
 	}
 	t.Log("Progress:", phases)
 	t.Log(result.Summary)
+}
+
+// A merge request's review is of its own commits: it stays valid while the
+// work tree changes, and goes when the commits do.
+func TestMergeRequestSnapshot(t *testing.T) {
+	repo, remote := testutil.RemoteRepo(t)
+	base, head := testutil.MergeRequest(t, repo, remote, "feature/shop", 73)
+	snapshot, err := MergeRequestSnapshot(repo, "Merge request !73", base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Range || snapshot.Base != base || snapshot.Head != head || snapshot.Scope != "Merge request !73" {
+		t.Fatalf("snapshot %+v", snapshot)
+	}
+	// The work tree's changes are not what this reviews.
+	if err := os.WriteFile(filepath.Join(repo, "unrelated.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(ctx context.Context, repo string, s Snapshot) (Result, error) {
+		if s.ID != snapshot.ID || s.Base != base || s.Head != head {
+			t.Errorf("reviewed %+v", s)
+		}
+		return Result{Status: "complete", Summary: "Fine.", Findings: []Finding{}}, nil
+	}
+	result, err := Run(t.Context(), repo, snapshot, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verdict != "passed" {
+		t.Errorf("verdict %q", result.Verdict)
+	}
+	// Commits that are gone leave nothing to review.
+	gone := snapshot
+	gone.Base, gone.Head = base, strings.Repeat("0", 40)
+	if _, err := Run(t.Context(), repo, gone, run); err == nil {
+		t.Error("no error for commits the repository does not have")
+	}
+}
+
+// A merge request whose two commits are one changes nothing to review.
+func TestMergeRequestSnapshotUnchanged(t *testing.T) {
+	repo, remote := testutil.RemoteRepo(t)
+	base, _ := testutil.MergeRequest(t, repo, remote, "feature/shop", 73)
+	snapshot, err := MergeRequestSnapshot(repo, "Merge request !73", base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ID != "" {
+		t.Errorf("a review of no changes: %+v", snapshot)
+	}
 }

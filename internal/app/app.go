@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,10 +40,17 @@ type app struct {
 	avatars  *avatars  // nil shows initials alone
 	repo     string
 	branch   string
-	github   string // the repository's page on GitHub, "" for none
-	// branchURL is the branch's page on GitHub, which the button opens
+	// host is where the repository's remotes are, GitHub or GitLab, for
+	// its pages and change requests; none for neither.
+	host git.Host
+	// branchURL is the branch's page on the host, which the button opens
 	// over the repository's where there is one.
 	branchURL string
+	// mergeRequest is the merge request shown, none for the branch's own
+	// history; instance is the GitLab instance the user named for the
+	// repository, "" to tell it from the remotes.
+	mergeRequest *mergeRequest
+	instance     string
 	// inline runs loads on the UI thread, as tests and snapshots want,
 	// and redraw asks for the frame a window's Update would draw then.
 	// Those a pass starts wait in published for the next, as a window's
@@ -86,8 +94,9 @@ type app struct {
 	// that files changed meanwhile.
 	refreshing, refreshAgain bool
 	// landOnBranch is that a branch was just checked out, for the history
-	// read for it to show the branch's changes.
-	landOnBranch bool
+	// read for it to show the branch's changes; landOnMergeRequest is that
+	// one was just fetched, for its changes to show as they do.
+	landOnBranch, landOnMergeRequest bool
 
 	// Changes mode.
 	changes    map[string]git.Change // by new path
@@ -363,8 +372,8 @@ func (a *app) toolbar(c *ui.Context, start, end bool) {
 		// Both sides as wide, so that the mode stays in the middle.
 		ui.Row(c).Grow(1).Basis(0).MinWidth(0).AlignItems(ui.Center).Justify(ui.End).Gap(t.Space(1)).Children(func() {
 			toolGroup(c, "Toolbar", func() {
-				if page := cmp.Or(a.branchURL, a.github); page != "" {
-					a.linkButton(c, "github", githubIcon, "Open on GitHub", page)
+				if page := cmp.Or(a.branchURL, a.host.Page); page != "" {
+					a.linkButton(c, "github", hostIcon(a.host.Kind), "Open on "+a.host.Name(), page)
 				}
 				if end {
 					a.actions(c)
@@ -484,16 +493,15 @@ func mutedDetail(c *ui.Context, detail string) func() {
 }
 
 // jumpBar is the bar over the text, as Xcode's jump bar: the title, its
-// references to pull requests and issues, as #123, linked to the GitHub
-// repository at github where there is one, what detail builds at its end,
-// a divider, and the body.
-func jumpBar(c *ui.Context, title, github string, detail, body func()) {
+// references to issues, as #123, linked on the host where there is one,
+// what detail builds at its end, a divider, and the body.
+func jumpBar(c *ui.Context, title string, host git.Host, detail, body func()) {
 	t := c.Theme()
 	ui.Row(c).Height(30).Shrink(0).FillWidth().AlignItems(ui.Center).Gap(t.Space(2)).
 		Padding(0, t.Space(3)).Children(func() {
 		ui.RichText(c).FontWeight(600).SingleLine().Ellipsis("…").
 			Grow(1).MinWidth(0).Tooltip(title).Children(func() {
-			linkedText(c, title, github)
+			linkedText(c, title, host)
 		})
 		detail()
 	})
@@ -501,20 +509,21 @@ func jumpBar(c *ui.Context, title, github string, detail, body func()) {
 	body()
 }
 
-// issueRef finds a reference to a pull request or an issue, #123, not
-// within a word or an entity such as &#123;.
+// issueRef finds a reference to an issue, #123, not within a word or an
+// entity such as &#123;.
 var issueRef = regexp.MustCompile(`(^|[^\w&/])#([0-9]+)\b`)
 
-// linkedText builds text, its references to pull requests and issues as
-// links to the GitHub repository at github, where there is one.
-func linkedText(c *ui.Context, text, github string) {
-	if github == "" {
+// linkedText builds text, its references to issues as links on the host,
+// where there is one.
+func linkedText(c *ui.Context, text string, host git.Host) {
+	if host.None() {
 		ui.Text(c, text)
 		return
 	}
 	for _, part := range splitRefs(text) {
 		if num, ok := strings.CutPrefix(part, "#"); ok && issueRef.MatchString(" "+part) {
-			ui.Link(c, part, github+"/issues/"+num)
+			n, _ := strconv.Atoi(num)
+			ui.Link(c, part, host.IssueURL(n))
 		} else {
 			ui.Text(c, part)
 		}
@@ -575,6 +584,9 @@ func (a *app) history(c *ui.Context) {
 			})
 		})
 	}, "History", mutedDetail(c, count(n, "commit")), func() {
+		if a.mergeRequest != nil {
+			a.mergeRequestBar(c)
+		}
 		switch {
 		case a.err != "":
 			emptyNote(c, a.err)
@@ -673,10 +685,10 @@ func (a *app) commitMenu(c *ui.Context, item ui.Element, i int, cm git.Commit) {
 			services.WriteClipboard(commitMessage(cm))
 			c.Toast("Commit Message Copied")
 		}
-		if a.github != "" {
+		if page := a.host.CommitURL(cm.Hash); page != "" {
 			m.Separator()
-			if m.Item("Open on GitHub").Chosen() {
-				services.OpenURL(a.github + "/commit/" + cm.Hash)
+			if m.Item("Open on " + a.host.Name()).Chosen() {
+				services.OpenURL(page)
 			}
 		}
 	})
@@ -879,17 +891,13 @@ func (a *app) fileMenu(services ui.Services, m *ui.Menu, p string, isDir bool) {
 		mygo.Shell.OpenPath(local)
 	}
 	cm, ok := a.current()
-	if a.github == "" || !ok || cm.Hash == git.Worktree {
+	if a.host.None() || !ok || cm.Hash == git.Worktree {
 		return
-	}
-	kind := "blob/"
-	if isDir {
-		kind = "tree/"
 	}
 	m.Separator()
 	gone := a.mode == modeChanges && a.changes[p].Status == "D"
-	if m.Item("Open on GitHub").Disabled(gone).Chosen() {
-		services.OpenURL(a.github + "/" + kind + git.Tip(cm.Hash) + "/" + p)
+	if m.Item("Open on " + a.host.Name()).Disabled(gone).Chosen() {
+		services.OpenURL(a.host.PathURL(git.Tip(cm.Hash), p, isDir))
 	}
 }
 
@@ -923,7 +931,7 @@ func (a *app) codePane(c *ui.Context) {
 	if a.picture != nil {
 		detail = pictureSize(a.picture)
 	}
-	jumpBar(c, a.openFile, "", func() {
+	jumpBar(c, a.openFile, git.Host{}, func() {
 		if detail != "" {
 			ui.Text(c, detail).FontSize(smallSize).TextColor(c.Theme().TextMuted).SingleLine().Shrink(0)
 		}
@@ -1054,16 +1062,22 @@ func (a *app) background(work func() func()) {
 }
 
 func (a *app) loadCommits() {
+	mr, instance := a.mergeRequestForRead(), a.instance
+	repo := a.repo
 	a.background(func() func() {
-		h := readHistory(a.repo)
+		h := readHistory(repo, mr, instance)
 		return func() {
 			if h.err != nil {
 				a.err = h.err.Error()
 				return
 			}
-			a.commits, a.worktreeChanges, a.branch, a.github, a.branchURL = h.commits, h.changes, h.branch, h.github, h.branchURL
+			a.commits, a.worktreeChanges, a.branch, a.host, a.branchURL = h.commits, h.changes, h.branch, h.host, h.branchURL
 			a.canPush, a.behind, a.upstream, a.dirty = h.canPush, h.behind, h.upstream, len(h.changes)
-			a.updateReviewSource(h.review, h.reviewErr)
+			if snapshot, note := a.mergeRequestSnapshot(); a.mergeRequest != nil {
+				a.updateReviewSource(snapshot, note)
+			} else {
+				a.updateReviewSource(h.review, h.reviewErr)
+			}
 			if len(h.commits) > 0 {
 				a.commitRow = landingRow(h)
 			}

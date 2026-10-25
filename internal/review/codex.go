@@ -52,6 +52,13 @@ func Codex(ctx context.Context, repo string, snapshot Snapshot, progress func(st
 }
 
 func (s Snapshot) context() string {
+	if s.Range {
+		return "Scope: " + s.Scope + ". Review the net changes between these fixed object IDs, without substituting another branch or revision, " +
+			"whatever the work tree and the branches checked out are meanwhile.\n" +
+			"Base: " + s.Base + "\nHead: " + s.Head + "\n" +
+			"Inspect with this command:\ngit diff --no-ext-diff --no-textconv --ignore-submodules=none " + s.Base + " " + s.Head + " --\n" +
+			"Read target files from the specified head."
+	}
 	if s.Scope == "Unpushed commits" {
 		return "Scope: Unpushed commits. Review the net changes between these fixed object IDs, without substituting another branch or revision.\n" +
 			"Base: " + s.Base + "\nHead: " + s.Head + "\n" +

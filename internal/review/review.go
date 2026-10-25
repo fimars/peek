@@ -18,6 +18,37 @@ const maxMetadata = 1024 * 1024
 
 type Snapshot struct {
 	ID, Scope, Base, Head string
+	// Range marks the changes of two fixed commits that the branch has
+	// fetched, as a merge request's: Base to Head, whichever branch is
+	// checked out and however the work tree changes meanwhile.
+	Range bool
+}
+
+// MergeRequestSnapshot is the snapshot of a merge request's changes: the
+// commits from base, where it left its target branch, to head, the two as
+// fixed IDs the repository has fetched.
+func MergeRequestSnapshot(repo, what, base, head string) (Snapshot, error) {
+	g := func(args ...string) (string, error) {
+		out, err := git.Bounded(repo, maxMetadata, args...)
+		return strings.TrimSpace(out), err
+	}
+	for _, oid := range []string{base, head} {
+		if _, err := g("rev-parse", "--verify", "--quiet", oid+"^{commit}"); err != nil {
+			return Snapshot{}, fmt.Errorf("the merge request's commits are not fetched: %w", err)
+		}
+	}
+	// Exit 1 means differences. No patch is generated or buffered here.
+	_, err := g("diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", base, head, "--")
+	if err == nil {
+		return Snapshot{}, nil // nothing changes: nothing to review
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		return Snapshot{}, err
+	}
+	fingerprint := sha256.New()
+	fmt.Fprintf(fingerprint, "merge-request\x00%s\x00%s", base, head)
+	return Snapshot{ID: fmt.Sprintf("%x", fingerprint.Sum(nil)), Scope: what, Base: base, Head: head, Range: true}, nil
 }
 
 func ReadSnapshot(repo string) (Snapshot, error) {
@@ -153,6 +184,30 @@ func Run(ctx context.Context, repo string, snapshot Snapshot, run Runner) (Resul
 	}
 	if snapshot.ID == "" {
 		return Result{}, errors.New("nothing to review")
+	}
+	// A merge request's commits are fixed IDs: the review reads them
+	// wherever the branch and the work tree go meanwhile, so what is
+	// checked is that they still name the same commits.
+	if snapshot.Range {
+		current, err := MergeRequestSnapshot(repo, snapshot.Scope, snapshot.Base, snapshot.Head)
+		if err != nil {
+			return Result{}, err
+		}
+		if current.ID != snapshot.ID {
+			return Result{}, ErrChanged
+		}
+		result, err := run(ctx, repo, snapshot)
+		if err != nil {
+			return Result{}, err
+		}
+		current, err = MergeRequestSnapshot(repo, snapshot.Scope, snapshot.Base, snapshot.Head)
+		if err != nil {
+			return Result{}, err
+		}
+		if current.ID != snapshot.ID {
+			return Result{}, ErrChanged
+		}
+		return result, result.validate()
 	}
 	current, err := ReadSnapshot(repo)
 	if err != nil {

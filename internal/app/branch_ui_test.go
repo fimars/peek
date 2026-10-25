@@ -21,8 +21,8 @@ func TestSwitcherUI(t *testing.T) {
 	log := testutil.FakeGH(t, "https://github.com/hyoban/peek")
 	a, tt := testApp(t, repo, nil)
 	settle(tt)
-	if a.branch != "main" || a.github == "" {
-		t.Fatalf("branch %q, github %q", a.branch, a.github)
+	if a.branch != "main" || a.host.None() {
+		t.Fatalf("branch %q, host %+v", a.branch, a.host)
 	}
 	if err := tt.Click("Switch Branch"); err != nil {
 		t.Fatal(err)

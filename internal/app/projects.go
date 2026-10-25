@@ -22,13 +22,16 @@ const maxRecent = 12 // the projects the switcher lists
 type projects struct {
 	avatars *avatars
 	apps    map[string]*app // the projects open, by repository
-	cur     *app            // the project the window shows, nil for none
-	recent  []string        // the repositories opened, the latest first
-	dir     string          // where recent and the projects open are kept, "" for nowhere
-	inline  bool            // no windows, the apps' loads on the UI thread, for tests
-	menu    *menuItems      // the menu bar's items that follow the project, nil in tests
-	win     *mygo.Window    // the window, which shows the project shown; nil while closed and in tests
-	bar     *menuBar        // the item in the menu bar, nil in tests
+	// instances are the GitLab instances the user named for repositories,
+	// by repository, for those whose remotes do not tell it.
+	instances map[string]instancePage
+	cur       *app         // the project the window shows, nil for none
+	recent    []string     // the repositories opened, the latest first
+	dir       string       // where recent and the projects open are kept, "" for nowhere
+	inline    bool         // no windows, the apps' loads on the UI thread, for tests
+	menu      *menuItems   // the menu bar's items that follow the project, nil in tests
+	win       *mygo.Window // the window, which shows the project shown; nil while closed and in tests
+	bar       *menuBar     // the item in the menu bar, nil in tests
 	// hideInactive hides Peek as another app comes to the front, as the
 	// user chooses in the menu bar's menu.
 	hideInactive bool
@@ -38,11 +41,12 @@ type projects struct {
 }
 
 func newProjects() *projects {
-	p := &projects{avatars: newAvatars(), apps: map[string]*app{}}
+	p := &projects{avatars: newAvatars(), apps: map[string]*app{}, instances: map[string]instancePage{}}
 	if dir, err := os.UserConfigDir(); err == nil {
 		p.dir = filepath.Join(dir, "peek")
 		p.recent = p.readList("recent")
 		p.hideInactive = exists(filepath.Join(p.dir, hideInactiveFile))
+		p.instances = p.readInstances()
 	}
 	return p
 }
@@ -74,6 +78,50 @@ func (p *projects) writeList(name string, repos []string) {
 		os.MkdirAll(filepath.Dir(file), 0o755)
 		os.WriteFile(file, data, 0o644)
 	}()
+}
+
+// setInstance keeps the GitLab instance the user named for a repository,
+// for the projects opened again to find its merge requests.
+func (p *projects) setInstance(repo, instance, page string) {
+	p.instances[repo] = instancePage{instance: instance, page: page}
+	if p.dir == "" {
+		return
+	}
+	var lines []string
+	for repo, ip := range p.instances {
+		lines = append(lines, repo+"\t"+ip.instance+"\t"+ip.page)
+	}
+	slices.Sort(lines)
+	p.writeList("instances", lines)
+}
+
+// instancePage is the GitLab instance a repository's merge requests are
+// on, and the project's page there.
+type instancePage struct {
+	instance, page string
+}
+
+// readInstances reads the instances the user named, by repository.
+func (p *projects) readInstances() map[string]instancePage {
+	instances := map[string]instancePage{}
+	if p.dir == "" {
+		return instances
+	}
+	data, err := os.ReadFile(filepath.Join(p.dir, "instances"))
+	if err != nil {
+		return instances
+	}
+	for line := range strings.Lines(string(data)) {
+		repo, rest, ok := strings.Cut(strings.TrimRight(line, "\n"), "\t")
+		if !ok {
+			continue
+		}
+		instance, page, _ := strings.Cut(rest, "\t")
+		if repo != "" && instance != "" {
+			instances[repo] = instancePage{instance: instance, page: page}
+		}
+	}
+	return instances
 }
 
 // hideInactiveFile is in the app's folder while Peek hides when inactive.
@@ -214,6 +262,7 @@ func (p *projects) open(repo string) {
 	if a == nil {
 		a = newApp(repo)
 		a.projects, a.avatars, a.inline, a.win = p, p.avatars, p.inline, p.win
+		a.instance = p.instances[repo].instance
 		if cur := p.cur; cur != nil { // the columns as they are
 			a.showHistory, a.showTree = cur.showHistory, cur.showTree
 			a.historyWidth, a.treeWidth = cur.historyWidth, cur.treeWidth
@@ -347,7 +396,7 @@ type menuItems struct {
 	layout, nextChange, previousChange       *menuItem
 	find                                     *menuItem
 	refresh, pull, ship, review, branch      *menuItem
-	github, finder                           *menuItem
+	web, mergeRequest, finder                *menuItem
 }
 
 // menuItem is an item of the menu bar, and what it last showed, so that
@@ -439,8 +488,9 @@ func (p *projects) setMenu() {
 			a.openSwitcher()
 			a.switcher.focus = true
 		}),
-		github: item("Open on GitHub", "", func(a *app) { mygo.Shell.OpenExternal(cmp.Or(a.branchURL, a.github)) }),
-		finder: item("Show in Finder", "Alt+Cmd+R", func(a *app) { mygo.Shell.ShowItemInFolder(a.repo) }),
+		web:          item("Open on GitHub", "", func(a *app) { mygo.Shell.OpenExternal(cmp.Or(a.branchURL, a.host.Page)) }),
+		mergeRequest: item("Close Merge Request", "", func(a *app) { a.closeMergeRequest() }),
+		finder:       item("Show in Finder", "Alt+Cmd+R", func(a *app) { mygo.Shell.ShowItemInFolder(a.repo) }),
 	}
 	p.menu = m
 	edit := []*mygo.MenuItem{
@@ -484,8 +534,9 @@ func (p *projects) setMenu() {
 			m.pull.MenuItem, m.ship.MenuItem, m.review.MenuItem,
 			mygo.Separator(),
 			m.branch.MenuItem,
+			m.mergeRequest.MenuItem,
 			mygo.Separator(),
-			m.github.MenuItem, m.finder.MenuItem,
+			m.web.MenuItem, m.finder.MenuItem,
 		}},
 		{Role: mygo.RoleWindowMenu},
 		{Role: mygo.RoleHelp},
@@ -502,7 +553,7 @@ func (p *projects) syncMenu() {
 	}
 	if a == nil {
 		for _, item := range []*menuItem{m.changes, m.files, m.sidebar, m.history, m.viewed, m.find, m.layout, m.nextChange, m.previousChange,
-			m.refresh, m.pull, m.ship, m.review, m.branch, m.github, m.finder} {
+			m.refresh, m.pull, m.ship, m.review, m.branch, m.mergeRequest, m.web, m.finder} {
 			item.show(item.shownLabel, false, item.shownChecked)
 		}
 		return
@@ -540,7 +591,8 @@ func (p *projects) syncMenu() {
 	}
 	m.review.show(review, a.review.running || (a.reviewSource.ID != "" || a.reviewSourceErr != "") && !busy, false)
 	m.branch.show("Switch Branch…", a.branch != "" && !busy, false)
-	m.github.show("Open on GitHub", cmp.Or(a.branchURL, a.github) != "", false)
+	m.mergeRequest.show("Close Merge Request", a.mergeRequest != nil, false)
+	m.web.show("Open on "+a.host.Name(), !a.host.None() && cmp.Or(a.branchURL, a.host.Page) != "", false)
 	m.finder.show("Show in Finder", true, false)
 }
 
