@@ -83,8 +83,8 @@ func Push(ctx context.Context, repo string, generate MessageGenerator, progress 
 		return "", err
 	}
 	// Fetch before committing so offline and authentication failures do not
-	// create a commit, but while Codex writes the message rather than before.
-	// Git still checks for concurrent remote updates on push.
+	// create a commit, but while the agent writes the message rather than
+	// before. Git still checks for concurrent remote updates on push.
 	progress("Fetching " + remote + "…")
 	fetched := make(chan error, 1)
 	go func() {
@@ -112,7 +112,7 @@ func Push(ctx context.Context, repo string, generate MessageGenerator, progress 
 	}
 	baseTree, _ := g("rev-parse", "HEAD^{tree}")
 	if tree != baseTree {
-		progress("Generating commit message with Codex…")
+		progress("Generating the commit message…")
 		message, err := generate(ctx, repo, Snapshot{Head: head, Tree: tree})
 		if err != nil {
 			return "", fmt.Errorf("generate commit message: %w", err)
@@ -122,14 +122,14 @@ func Push(ctx context.Context, repo string, generate MessageGenerator, progress 
 		}
 		message = strings.TrimSpace(message)
 		if message == "" || strings.ContainsRune(message, 0) {
-			return "", fmt.Errorf("Codex returned an empty or invalid commit message")
+			return "", fmt.Errorf("The agent returned an empty or invalid commit message")
 		}
 		currentTree, err := g("write-tree")
 		if err != nil {
 			return "", err
 		}
 		if currentTree != tree {
-			return "", fmt.Errorf("the index or branch changed while Codex was working; retry Ship")
+			return "", fmt.Errorf("the index or branch changed while the commit message was written; retry Ship")
 		}
 		if err := samePushHead(g, branch, head); err != nil {
 			return "", err

@@ -60,6 +60,7 @@ type app struct {
 	upstream                 string // the upstream's name, where the branch is behind it
 	pull                     pullState
 	review                   reviewState
+	agent                    agentKind // the AI agent Ship and Review use
 	// reviewSource is what a review is of where the work tree or a commit
 	// shows: the uncommitted changes, else the commits not pushed yet.
 	reviewSource    review.Snapshot
@@ -130,6 +131,7 @@ type app struct {
 func newApp(repo string) *app {
 	return &app{
 		repo:         repo,
+		agent:        agentCodex,
 		showHistory:  true,
 		showTree:     true,
 		historyWidth: 360,
@@ -141,6 +143,23 @@ func newApp(repo string) *app {
 		filesFor:     -1,
 		changeTree:   newPathTree(),
 		allTree:      newPathTree(),
+	}
+}
+
+// agentKind is the agent Ship and Review use: the projects' where there are,
+// else this app's, as tests keep it.
+func (a *app) agentKind() agentKind {
+	if a.projects != nil {
+		return a.projects.agent
+	}
+	return a.agent
+}
+
+// chooseAgent chooses the agent, kept for the next launches.
+func (a *app) chooseAgent(k agentKind) {
+	a.agent = k
+	if a.projects != nil {
+		a.projects.setAgent(k)
 	}
 }
 
@@ -331,6 +350,7 @@ func toolGroup(c *ui.Context, label string, build func()) ui.Element {
 // and shipping them, over the history, which they add to, or at the end
 // of the text's part while the history hides.
 func (a *app) actions(c *ui.Context) {
+	a.agentButton(c)
 	a.reviewButton(c)
 	a.pushButton(c)
 }

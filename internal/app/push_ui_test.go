@@ -43,7 +43,7 @@ func TestPushUI(t *testing.T) {
 		t.Fatal("Ship ran with nothing to push")
 	}
 	cancelled := false
-	a.push = pushState{running: true, status: "Generating commit message with Codex…", cancel: func() { cancelled = true }}
+	a.push = pushState{running: true, status: "Generating the commit message…", cancel: func() { cancelled = true }}
 	tt.Frame()
 	if !tt.HasText("Generating…") {
 		t.Fatal("no activity", tt.Texts())
@@ -100,7 +100,7 @@ func TestPushButtonLayouts(t *testing.T) {
 			t.Fatal("mode switch missing")
 		}
 		for _, state := range []pushState{
-			{running: true, status: "Generating commit message with Codex…"},
+			{running: true, status: "Generating the commit message…"},
 			{running: true, status: "Shipping origin/main…"},
 			{status: "Shipped to origin/main"},
 			{},

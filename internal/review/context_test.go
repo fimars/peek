@@ -11,6 +11,10 @@ import (
 	"unicode/utf8"
 )
 
+func codexReview(ctx context.Context, repo string, snapshot Snapshot) (Result, error) {
+	return Codex(ctx, repo, snapshot, nil)
+}
+
 func TestReviewPassesContextWithoutFileContents(t *testing.T) {
 	testutil.FakeReviewCodex(t, testutil.PassingReview)
 	promptFile := filepath.Join(t.TempDir(), "prompt.txt")

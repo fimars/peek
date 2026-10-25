@@ -3,8 +3,9 @@
 ## Layout
 
 `main.go` only starts `internal/app`, the window. Beside it, under
-`internal/`: `git` runs git and gh, `codex` runs the Codex CLI, `review`
-builds Codex reviews on both, `fileicons` draws file icons, `filekind`
+`internal/`: `git` runs git and gh, `codex` and `grok` run the Codex and
+Grok Build CLIs, `commitmsg` writes the commit prompt both answer, `review`
+builds the reviews on both, `fileicons` draws file icons, `filekind`
 tells code from tests, docs and generated files, and `testutil`
 holds the repositories and fake CLIs the tests share.
 

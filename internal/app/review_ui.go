@@ -70,8 +70,9 @@ func (a *app) reviewSourceOf(scope string) review.Snapshot {
 
 func (a *app) reviewButton(c *ui.Context) {
 	services := c.Services()
+	def := agentDefOf(a.agentKind())
 	if a.review.running {
-		text, tooltip := "Reviewing…", "Codex is reviewing the changes"
+		text, tooltip := "Reviewing…", def.name+" is reviewing the changes"
 		if a.review.phase != "" {
 			if a.review.started.IsZero() {
 				a.review.started = c.Now()
@@ -87,14 +88,14 @@ func (a *app) reviewButton(c *ui.Context) {
 	// A review of other changes than those selected stays for them, and
 	// the selected ones are offered instead.
 	other := a.review.sourceID != "" && (a.review.scope == review.BranchScope) != (target.Scope == review.BranchScope)
-	label, tooltip := "Review", "Review the changes with Codex"
+	label, tooltip := "Review", "Review the changes with "+def.name
 	switch {
 	case other && targetErr != "":
 		tooltip = targetErr
 	case other && target.ID == "":
 		tooltip = "Nothing to review"
 	case other:
-		tooltip = "Review " + target.Scope + " with Codex"
+		tooltip = "Review " + target.Scope + " with " + def.name
 	case a.review.stale:
 		label, tooltip = "Review Again", "The changes have changed since the last review"
 	case a.review.err != "":
@@ -112,7 +113,7 @@ func (a *app) reviewButton(c *ui.Context) {
 	case target.ID == "":
 		tooltip = "Nothing to review"
 	default:
-		tooltip = "Review " + target.Scope + " with Codex"
+		tooltip = "Review " + target.Scope + " with " + def.name
 	}
 	available := target.ID != "" || targetErr != ""
 	completed := !other && !a.review.stale && (a.review.result != nil || a.review.err != "")
@@ -141,6 +142,7 @@ func (a *app) startReview(services ui.Services) {
 	if snapshot.ID == "" {
 		return
 	}
+	def := agentDefOf(a.agentKind())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	repo := a.repo
 	a.review = reviewState{running: true, cancel: cancel, sourceID: snapshot.ID, scope: snapshot.Scope, head: snapshot.Head, base: snapshot.Base,
@@ -158,8 +160,8 @@ func (a *app) startReview(services ui.Services) {
 	a.background(func() func() {
 		defer cancel()
 		run := func(ctx context.Context, repo string, snapshot review.Snapshot) (review.Result, error) {
-			progress("Starting…", "Starting Codex")
-			result, err := review.Codex(ctx, repo, snapshot, progress)
+			progress("Starting…", "Starting "+def.name)
+			result, err := def.review(ctx, repo, snapshot, progress)
 			progress("Checking…", "Validating the review result and checking for changes")
 			return result, err
 		}

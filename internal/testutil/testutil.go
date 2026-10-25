@@ -1,5 +1,5 @@
 // Package testutil holds what the tests of several packages share: the
-// repositories they run over, and stand-ins for Codex and gh.
+// repositories they run over, and stand-ins for Codex, Grok Build and gh.
 package testutil
 
 import (
@@ -163,4 +163,58 @@ cp "$PEEK_TEST_REVIEW_RESPONSE" "$output"
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// grokScript answers as Grok Build's streaming JSON does: the events file,
+// then the response as the end event's structured output.
+const grokScript = `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --prompt-file) shift; if [ -n "$PEEK_TEST_GROK_PROMPT" ]; then cp "$1" "$PEEK_TEST_GROK_PROMPT"; fi ;;
+    --cwd) shift; if [ -n "$PEEK_TEST_GROK_CWD" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_CWD"; fi ;;
+    --json-schema) shift; if [ -n "$PEEK_TEST_GROK_SCHEMA" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_SCHEMA"; fi ;;
+    --sandbox) shift; test "$1" = read-only || exit 2 ;;
+    --output-format) shift; test "$1" = streaming-json || exit 3 ;;
+  esac
+  shift
+done
+if [ -n "$PEEK_TEST_GROK_EVENTS" ]; then cat "$PEEK_TEST_GROK_EVENTS"; fi
+if [ -n "$PEEK_TEST_GROK_RESPONSE" ]; then
+  printf '{"type":"end","structuredOutput":'
+  cat "$PEEK_TEST_GROK_RESPONSE"
+  printf '}\n'
+fi
+`
+
+// fakeGrok puts the grok of grokScript first on the PATH.
+func fakeGrok(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "grok"), []byte(grokScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// FakeGrok puts a grok on the PATH that writes response as the answer.
+func FakeGrok(t *testing.T, response string) {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "response.json")
+	if err := os.WriteFile(file, []byte(response), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PEEK_TEST_GROK_RESPONSE", file)
+	fakeGrok(t)
+}
+
+// FakeGrokEvents puts a grok on the PATH that streams events, and no answer
+// of its own.
+func FakeGrokEvents(t *testing.T, events string) {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "events.ndjson")
+	if err := os.WriteFile(file, []byte(events), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PEEK_TEST_GROK_EVENTS", file)
+	fakeGrok(t)
 }

@@ -24,6 +24,7 @@ type projects struct {
 	cur     *app            // the project the window shows, nil for none
 	recent  []string        // the repositories opened, the latest first
 	dir     string          // where recent and the projects open are kept, "" for nowhere
+	agent   agentKind       // the AI agent Ship and Review use
 	inline  bool            // no windows, the apps' loads on the UI thread, for tests
 	menu    *menuItems      // the menu bar's items that follow the project, nil in tests
 	win     *mygo.Window    // the window, which shows the project shown; nil while closed and in tests
@@ -39,14 +40,39 @@ type projects struct {
 }
 
 func newProjects() *projects {
-	p := &projects{avatars: newAvatars(), apps: map[string]*app{}}
+	p := &projects{avatars: newAvatars(), apps: map[string]*app{}, agent: agentCodex}
 	if dir, err := os.UserConfigDir(); err == nil {
 		p.dir = filepath.Join(dir, "peek")
 		p.recent = p.readList("recent")
 		p.menuBarOn = exists(filepath.Join(p.dir, menuBarFile))
 		p.hideInactive = exists(filepath.Join(p.dir, hideInactiveFile))
+		p.agent = p.readAgent()
 	}
 	return p
+}
+
+// readAgent is the agent kept for the next launches: Codex without a file
+// or for a value it does not know.
+func (p *projects) readAgent() agentKind {
+	if p.dir == "" {
+		return agentCodex
+	}
+	data, err := os.ReadFile(filepath.Join(p.dir, agentFile))
+	if err != nil {
+		return agentCodex
+	}
+	return parseAgent(strings.TrimSpace(string(data)))
+}
+
+// setAgent keeps the agent for the next launches. The write is synchronous
+// so that two quick selections cannot land out of order.
+func (p *projects) setAgent(k agentKind) {
+	p.agent = k
+	if p.dir == "" {
+		return
+	}
+	os.MkdirAll(p.dir, 0o755)
+	os.WriteFile(filepath.Join(p.dir, agentFile), []byte(string(k)+"\n"), 0o644)
 }
 
 // readList reads the repositories listed in the file of the app's folder
@@ -82,6 +108,7 @@ func (p *projects) writeList(name string, repos []string) {
 const (
 	menuBarFile      = "menu-bar"
 	hideInactiveFile = "hide-when-inactive"
+	agentFile        = "agent"
 )
 
 // keepChoice keeps a choice of the user's for the next launches.
@@ -241,6 +268,7 @@ func (p *projects) open(repo string) {
 	if a == nil {
 		a = newApp(repo)
 		a.projects, a.avatars, a.inline, a.win = p, p.avatars, p.inline, p.win
+		a.agent = p.agent
 		if cur := p.cur; cur != nil { // the columns as they are
 			a.showHistory, a.showTree = cur.showHistory, cur.showTree
 			a.historyWidth, a.treeWidth = cur.historyWidth, cur.treeWidth

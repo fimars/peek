@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"peek/internal/codex"
 	"peek/internal/git"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ type pushState struct {
 }
 
 func (a *app) pushButton(c *ui.Context) {
+	def := agentDefOf(a.agentKind())
 	if a.push.running {
 		text := "Shipping…"
 		if phase, _, ok := strings.Cut(a.push.status, " "); ok {
@@ -37,7 +37,7 @@ func (a *app) pushButton(c *ui.Context) {
 			a.push.until = time.Time{}
 		}
 	}
-	label, tooltip := "Ship", "Commit all changes with Codex and push"
+	label, tooltip := "Ship", "Commit all changes with "+def.name+" and push"
 	if a.push.status != "" {
 		label, tooltip = "Shipped", a.push.status
 	}
@@ -58,6 +58,7 @@ func (a *app) startPush() {
 	if a.push.running || a.review.running || a.switcher.running != "" || a.pull.running || !a.canPush {
 		return
 	}
+	def := agentDefOf(a.agentKind())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	a.push = pushState{running: true, status: "Preparing to ship…", cancel: cancel}
 	repo, win, inline := a.repo, a.win, a.inline
@@ -68,7 +69,7 @@ func (a *app) startPush() {
 	}
 	a.background(func() func() {
 		defer cancel()
-		status, err := git.Push(ctx, repo, codex.CommitMessage, progress)
+		status, err := git.Push(ctx, repo, def.commit, progress)
 		stopped := ctx.Err() == context.Canceled // before the deferred cancel
 		return func() {
 			a.push.running, a.push.cancel = false, nil

@@ -1,5 +1,5 @@
-// Package review has Codex review a repository's uncommitted changes, its
-// commits not pushed yet, or its branch's changes, and tells whether a
+// Package review has an AI agent review a repository's uncommitted changes,
+// its commits not pushed yet, or its branch's changes, and tells whether a
 // result is out of date.
 package review
 
@@ -117,13 +117,13 @@ type Finding struct {
 }
 
 type Result struct {
-	// Status is what Codex says of its review: complete, or inconclusive
+	// Status is what the agent says of its review: complete, or inconclusive
 	// where it could not finish it.
 	Status   string    `json:"status"`
 	Summary  string    `json:"summary"`
 	Findings []Finding `json:"findings"`
 	// Verdict is passed or failed, as validate judges by the findings'
-	// priorities rather than as Codex would.
+	// priorities rather than as the agent would.
 	Verdict string `json:"-"`
 }
 
@@ -140,23 +140,23 @@ func (r Result) Text() string {
 	return text.String()
 }
 
-// validate checks the review Codex returned and judges its verdict: failed
-// where a finding is of P0 to P2, else passed.
+// validate checks the review the agent returned and judges its verdict:
+// failed where a finding is of P0 to P2, else passed.
 func (r *Result) validate() error {
 	if strings.TrimSpace(r.Summary) == "" || r.Findings == nil {
-		return fmt.Errorf("Codex returned an incomplete review")
+		return fmt.Errorf("The agent returned an incomplete review")
 	}
 	switch r.Status {
 	case "complete":
 	case "inconclusive":
 		return fmt.Errorf("review inconclusive: %s", r.Summary)
 	default:
-		return fmt.Errorf("Codex returned an invalid review status")
+		return fmt.Errorf("The agent returned an invalid review status")
 	}
 	r.Verdict = "passed"
 	for _, f := range r.Findings {
 		if f.Priority < 0 || f.Priority > 3 || f.Line < 1 || strings.TrimSpace(f.Title) == "" || strings.TrimSpace(f.Body) == "" || strings.TrimSpace(f.Path) == "" {
-			return fmt.Errorf("Codex returned an incomplete review finding")
+			return fmt.Errorf("The agent returned an incomplete review finding")
 		}
 		if f.Priority <= blockingPriority {
 			r.Verdict = "failed"

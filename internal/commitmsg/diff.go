@@ -1,4 +1,4 @@
-package codex
+package commitmsg
 
 import (
 	"context"
