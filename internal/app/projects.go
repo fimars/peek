@@ -1,7 +1,6 @@
 package app
 
 import (
-	"cmp"
 	"os"
 	"path"
 	"path/filepath"
@@ -29,9 +28,11 @@ type projects struct {
 	menu    *menuItems      // the menu bar's items that follow the project, nil in tests
 	win     *mygo.Window    // the window, which shows the project shown; nil while closed and in tests
 	bar     *menuBar        // the item in the menu bar, nil in tests
-	// hideInactive hides Peek as another app comes to the front, as the
-	// user chooses in the menu bar's menu.
-	hideInactive bool
+	badge   int             // the count on the Dock icon
+	// menuBarOn shows Peek's item in the menu bar, and hideInactive hides
+	// Peek as another app comes to the front, as the user chooses in the
+	// app menu.
+	menuBarOn, hideInactive bool
 	// quitting keeps the projects open as the app quits, for the next
 	// launch to open them again.
 	quitting bool
@@ -42,6 +43,7 @@ func newProjects() *projects {
 	if dir, err := os.UserConfigDir(); err == nil {
 		p.dir = filepath.Join(dir, "peek")
 		p.recent = p.readList("recent")
+		p.menuBarOn = exists(filepath.Join(p.dir, menuBarFile))
 		p.hideInactive = exists(filepath.Join(p.dir, hideInactiveFile))
 	}
 	return p
@@ -76,25 +78,49 @@ func (p *projects) writeList(name string, repos []string) {
 	}()
 }
 
-// hideInactiveFile is in the app's folder while Peek hides when inactive.
-const hideInactiveFile = "hide-when-inactive"
+// The user's choices are files in the app's folder, there while chosen.
+const (
+	menuBarFile      = "menu-bar"
+	hideInactiveFile = "hide-when-inactive"
+)
 
-// setHideInactive chooses whether Peek hides when inactive, for the next
-// launches too.
-func (p *projects) setHideInactive(hide bool) {
-	p.hideInactive = hide
+// keepChoice keeps a choice of the user's for the next launches.
+func (p *projects) keepChoice(name string, on bool) {
 	if p.dir == "" {
 		return
 	}
-	file := filepath.Join(p.dir, hideInactiveFile)
+	file := filepath.Join(p.dir, name)
 	go func() {
-		if !hide {
+		if !on {
 			os.Remove(file)
 			return
 		}
 		os.MkdirAll(p.dir, 0o755)
 		os.WriteFile(file, nil, 0o644)
 	}()
+}
+
+// setHideInactive chooses whether Peek hides when inactive.
+func (p *projects) setHideInactive(hide bool) {
+	p.hideInactive = hide
+	p.keepChoice(hideInactiveFile, hide)
+	p.syncMenu()
+}
+
+// setMenuBarOn chooses whether Peek's item shows in the menu bar, in
+// place of its Dock icon. AppKit may deactivate the app as its icon goes
+// or comes, so the window comes to the front again.
+func (p *projects) setMenuBarOn(on bool) {
+	p.menuBarOn = on
+	p.keepChoice(menuBarFile, on)
+	p.showMenuBar(on)
+	p.syncMenu()
+	if !p.inline {
+		mygo.App.Focus()
+		if p.win != nil {
+			p.win.Focus()
+		}
+	}
 }
 
 func exists(p string) bool {
@@ -115,6 +141,7 @@ func (p *projects) view(c *ui.Context) {
 	ui.Column(c).Key(a.repo).Fill().Children(func() { a.view(c) })
 	p.syncMenu()
 	p.syncTitle()
+	p.syncBadge()
 }
 
 // welcome is the window before any project opens, as a Mac app's welcome
@@ -348,6 +375,7 @@ type menuItems struct {
 	find                                     *menuItem
 	refresh, pull, ship, review, branch      *menuItem
 	web, finder                              *menuItem
+	menuBar, hideInactive                    *menuItem
 }
 
 // menuItem is an item of the menu bar, and what it last showed, so that
@@ -439,8 +467,12 @@ func (p *projects) setMenu() {
 			a.openSwitcher()
 			a.switcher.focus = true
 		}),
-		web:    item("Open on GitHub", "", func(a *app) { mygo.Shell.OpenExternal(cmp.Or(a.branchURL, a.host.Page)) }),
+		web:    item("Open on GitHub", "", func(a *app) { mygo.Shell.OpenExternal(a.webPage()) }),
 		finder: item("Show in Finder", "Alt+Cmd+R", func(a *app) { mygo.Shell.ShowItemInFolder(a.repo) }),
+		menuBar: newMenuItem(&mygo.MenuItem{Label: "Show in Menu Bar", Type: mygo.MenuItemCheckbox, Checked: p.menuBarOn,
+			Click: func(*mygo.MenuItem, *mygo.Window) { p.setMenuBarOn(!p.menuBarOn) }}),
+		hideInactive: newMenuItem(&mygo.MenuItem{Label: "Hide When Inactive", Type: mygo.MenuItemCheckbox, Checked: p.hideInactive,
+			Click: func(*mygo.MenuItem, *mygo.Window) { p.setHideInactive(!p.hideInactive) }}),
 	}
 	p.menu = m
 	edit := []*mygo.MenuItem{
@@ -458,7 +490,19 @@ func (p *projects) setMenu() {
 		}},
 	}
 	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
-		{Role: mygo.RoleAppMenu},
+		// The app menu as AppKit's, with the app's choices, as it has no
+		// settings window for two.
+		{Label: "Peek", Submenu: []*mygo.MenuItem{
+			{Role: mygo.RoleAbout},
+			mygo.Separator(),
+			m.menuBar.MenuItem, m.hideInactive.MenuItem,
+			mygo.Separator(),
+			{Role: mygo.RoleServices},
+			mygo.Separator(),
+			{Role: mygo.RoleHide}, {Role: mygo.RoleHideOthers}, {Role: mygo.RoleUnhide},
+			mygo.Separator(),
+			{Role: mygo.RoleQuit},
+		}},
 		{Label: "File", Submenu: []*mygo.MenuItem{
 			{Label: "Open Folder…", Accelerator: "CmdOrCtrl+O", Click: func(*mygo.MenuItem, *mygo.Window) { p.choose() }},
 			{Role: mygo.RoleOpenRecent},
@@ -500,6 +544,8 @@ func (p *projects) syncMenu() {
 	if m == nil {
 		return
 	}
+	m.menuBar.show("Show in Menu Bar", true, p.menuBarOn)
+	m.hideInactive.show("Hide When Inactive", true, p.hideInactive)
 	if a == nil {
 		for _, item := range []*menuItem{m.changes, m.files, m.sidebar, m.history, m.viewed, m.find, m.layout, m.nextChange, m.previousChange,
 			m.refresh, m.pull, m.ship, m.review, m.branch, m.web, m.finder} {
@@ -538,12 +584,13 @@ func (p *projects) syncMenu() {
 	if a.review.running {
 		review = "Stop Review"
 	}
-	m.review.show(review, a.review.running || (a.reviewSource.ID != "" || a.reviewSourceErr != "") && !busy, false)
+	target, targetErr := a.reviewTarget()
+	m.review.show(review, a.review.running || (target.ID != "" || targetErr != "") && !busy, false)
 	m.branch.show("Switch Branch…", a.branch != "" && !busy, false)
 	if a.host.None() {
 		m.web.show("Open on GitHub", false, false)
 	} else {
-		m.web.show("Open on "+a.host.Name(), a.host.Page != "", false)
+		m.web.show("Open on "+a.host.Name(), a.webPage() != "", false)
 	}
 	m.finder.show("Show in Finder", true, false)
 }

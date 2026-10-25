@@ -3,7 +3,6 @@
 package app
 
 import (
-	"cmp"
 	"fmt"
 	"log"
 	"os"
@@ -44,6 +43,9 @@ type app struct {
 	// branchURL is the branch's page on the code host, which the button
 	// opens over the repository's where there is one.
 	branchURL string
+	// pullURL is the page of the branch's pull request, which the button
+	// opens over the branch's, as read for the branch's page pullURLFor.
+	pullURL, pullURLFor string
 	// inline runs loads on the UI thread, as tests and snapshots want,
 	// and redraw asks for the frame a window's Update would draw then.
 	// Those a pass starts wait in published for the next, as a window's
@@ -58,9 +60,13 @@ type app struct {
 	upstream                 string // the upstream's name, where the branch is behind it
 	pull                     pullState
 	review                   reviewState
-	reviewSource             review.Snapshot
-	reviewSourceErr          string
-	switcher                 switcherState
+	// reviewSource is what a review is of where the work tree or a commit
+	// shows: the uncommitted changes, else the commits not pushed yet.
+	reviewSource    review.Snapshot
+	reviewSourceErr string
+	// branchReview is what it is of where the branch's changes show.
+	branchReview review.Snapshot
+	switcher     switcherState
 	// theme is this pass's, listTheme the one of lists with the keyboard
 	// focus and inactiveTheme the one of lists without it.
 	theme, listTheme, inactiveTheme *ui.Theme
@@ -365,7 +371,7 @@ func (a *app) toolbar(c *ui.Context, start, end bool) {
 		// Both sides as wide, so that the mode stays in the middle.
 		ui.Row(c).Grow(1).Basis(0).MinWidth(0).AlignItems(ui.Center).Justify(ui.End).Gap(t.Space(1)).Children(func() {
 			toolGroup(c, "Toolbar", func() {
-				if page := cmp.Or(a.branchURL, a.host.Page); page != "" {
+				if page := a.webPage(); page != "" {
 					a.linkButton(c, "host", hostIcon(a.host.Kind), "Open on "+a.host.Name(), page)
 				}
 				if end {
@@ -1063,6 +1069,8 @@ func (a *app) loadCommits() {
 			a.commits, a.worktreeChanges, a.branch, a.host, a.branchURL = h.commits, h.changes, h.branch, h.host, h.branchURL
 			a.canPush, a.behind, a.upstream, a.dirty = h.canPush, h.behind, h.upstream, len(h.changes)
 			a.updateReviewSource(h.review, h.reviewErr)
+			a.updateBranchReview(h.branchReview)
+			a.readPullURL(false)
 			if len(h.commits) > 0 {
 				a.commitRow = landingRow(h)
 			}
@@ -1193,8 +1201,8 @@ func Run(args []string) {
 	mygo.App.OnOpenFile(func(path string) {
 		go p.openFolder(path, nil)
 	})
-	// Peek stays open without windows, in the menu bar, and opens one
-	// again as it is opened from Finder.
+	// A Mac app stays open without windows, and opens one again as its
+	// Dock icon is clicked.
 	mygo.App.OnWindowAllClosed(func() {})
 	mygo.App.OnActivate(func(hasVisibleWindows bool) {
 		if !hasVisibleWindows {
@@ -1204,11 +1212,13 @@ func Run(args []string) {
 	})
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { p.quitting = true })
 	p.followApp()
-	// No Dock icon: the menu bar's item is Peek's place (menubar.go).
-	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
+	if p.menuBarOn {
+		useDock(false) // from the start, its icon never showing
+	}
 	mygo.App.WhenReady(func() {
 		p.setMenu()
-		p.setMenuBar()
+		p.setDockMenu()
+		p.showMenuBar(p.menuBarOn)
 		p.followNetwork()
 		if err == nil {
 			p.open(repo)
