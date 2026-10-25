@@ -117,12 +117,12 @@ func (a *app) openSwitcher() {
 			}
 		}
 	})
-	if a.github == "" {
+	if a.host.Kind != git.KindGitHub {
 		s.prs, s.prsRead, s.prErr = nil, true, ""
 		return
 	}
 	s.prsRead = s.prs != nil // the last ones show until the new come
-	github := a.github
+	github := a.host.Page
 	a.background(func() func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -203,7 +203,7 @@ func (a *app) rows() (rows []switchRow, preferred int) {
 	for _, b := range remote {
 		rows = append(rows, switchRow{target: switchTarget{branch: b, remote: true}, heading: h(), icon: branchIcon, title: b})
 	}
-	if a.github == "" {
+	if a.host.Kind != git.KindGitHub {
 		return rows, 0
 	}
 	h = heading("Pull Requests")
@@ -358,7 +358,7 @@ func (a *app) switcherPanel(c *ui.Context) {
 						s.moved, s.movedFor = i, s.query
 					}
 				}
-				if a.github == "" {
+				if a.host.Kind != git.KindGitHub {
 					return
 				}
 				if !slices.ContainsFunc(rows, func(r switchRow) bool { return r.target.pr > 0 }) {

@@ -235,7 +235,7 @@ func (a *app) diffPane(c *ui.Context) {
 	if n := len(a.diffs); n > 0 {
 		detail = count(n, "file")
 	}
-	jumpBar(c, title, a.github, func() {
+	jumpBar(c, title, a.host, func() {
 		mutedDetail(c, detail)()
 		if len(a.diffs) > 0 {
 			a.commentsButton(c)

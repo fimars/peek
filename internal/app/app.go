@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,9 +40,9 @@ type app struct {
 	avatars  *avatars  // nil shows initials alone
 	repo     string
 	branch   string
-	github   string // the repository's page on GitHub, "" for none
-	// branchURL is the branch's page on GitHub, which the button opens
-	// over the repository's where there is one.
+	host     git.Host // the code host of the repository's remotes, none for none
+	// branchURL is the branch's page on the code host, which the button
+	// opens over the repository's where there is one.
 	branchURL string
 	// inline runs loads on the UI thread, as tests and snapshots want,
 	// and redraw asks for the frame a window's Update would draw then.
@@ -342,8 +343,9 @@ func (a *app) repository(c *ui.Context) ui.Element {
 }
 
 // toolbar is the part of the toolbar over the text: the mode in the middle
-// and the page on GitHub at the end, with the buttons and the controls of
-// the columns hidden, which their own parts hold while they show.
+// and the page on the code host at the end, with the buttons and the
+// controls of the columns hidden, which their own parts hold while they
+// show.
 func (a *app) toolbar(c *ui.Context, start, end bool) {
 	t := c.Theme()
 	toolbarPart(c, start, end, func() {
@@ -363,8 +365,8 @@ func (a *app) toolbar(c *ui.Context, start, end bool) {
 		// Both sides as wide, so that the mode stays in the middle.
 		ui.Row(c).Grow(1).Basis(0).MinWidth(0).AlignItems(ui.Center).Justify(ui.End).Gap(t.Space(1)).Children(func() {
 			toolGroup(c, "Toolbar", func() {
-				if page := cmp.Or(a.branchURL, a.github); page != "" {
-					a.linkButton(c, "github", githubIcon, "Open on GitHub", page)
+				if page := cmp.Or(a.branchURL, a.host.Page); page != "" {
+					a.linkButton(c, "host", hostIcon(a.host.Kind), "Open on "+a.host.Name(), page)
 				}
 				if end {
 					a.actions(c)
@@ -443,7 +445,7 @@ func (a *app) projectTitle(c *ui.Context) {
 func (a *app) linkButton(c *ui.Context, key string, svg *ui.SVG, label, url string) {
 	services := c.Services()
 	ui.Button(c.Key(key), "").Shrink(0).Label(label).Tooltip(label + " — " + strings.TrimPrefix(url, "https://")).
-		Children(func() { ui.Icon(c, svg).Size(16, 16) }).OnClick(func() { services.OpenURL(url) })
+		Children(func() { ui.Image(c, svg).Size(16, 16) }).OnClick(func() { services.OpenURL(url) })
 }
 
 // sideColumn builds a side column, the sidebar or the history: over bg,
@@ -484,16 +486,16 @@ func mutedDetail(c *ui.Context, detail string) func() {
 }
 
 // jumpBar is the bar over the text, as Xcode's jump bar: the title, its
-// references to pull requests and issues, as #123, linked to the GitHub
-// repository at github where there is one, what detail builds at its end,
-// a divider, and the body.
-func jumpBar(c *ui.Context, title, github string, detail, body func()) {
+// references to pull requests and issues, as #123, linked to the code
+// host's repository at host where there is one, what detail builds at its
+// end, a divider, and the body.
+func jumpBar(c *ui.Context, title string, host git.Host, detail, body func()) {
 	t := c.Theme()
 	ui.Row(c).Height(30).Shrink(0).FillWidth().AlignItems(ui.Center).Gap(t.Space(2)).
 		Padding(0, t.Space(3)).Children(func() {
 		ui.RichText(c).FontWeight(600).SingleLine().Ellipsis("…").
 			Grow(1).MinWidth(0).Tooltip(title).Children(func() {
-			linkedText(c, title, github)
+			linkedText(c, title, host)
 		})
 		detail()
 	})
@@ -506,15 +508,16 @@ func jumpBar(c *ui.Context, title, github string, detail, body func()) {
 var issueRef = regexp.MustCompile(`(^|[^\w&/])#([0-9]+)\b`)
 
 // linkedText builds text, its references to pull requests and issues as
-// links to the GitHub repository at github, where there is one.
-func linkedText(c *ui.Context, text, github string) {
-	if github == "" {
+// links to the code host's repository at host, where there is one.
+func linkedText(c *ui.Context, text string, host git.Host) {
+	if host.None() {
 		ui.Text(c, text)
 		return
 	}
 	for _, part := range splitRefs(text) {
 		if num, ok := strings.CutPrefix(part, "#"); ok && issueRef.MatchString(" "+part) {
-			ui.Link(c, part, github+"/issues/"+num)
+			n, _ := strconv.Atoi(num)
+			ui.Link(c, part, host.IssueURL(n))
 		} else {
 			ui.Text(c, part)
 		}
@@ -661,7 +664,7 @@ func commitMessage(cm git.Commit) string {
 }
 
 // commitMenu is the context menu of a commit's row: copying its hash or
-// message, and its page on GitHub.
+// message, and its page on the code host.
 func (a *app) commitMenu(c *ui.Context, item ui.Element, i int, cm git.Commit) {
 	services := c.Services()
 	item.ContextMenu(func(m *ui.Menu) {
@@ -673,10 +676,10 @@ func (a *app) commitMenu(c *ui.Context, item ui.Element, i int, cm git.Commit) {
 			services.WriteClipboard(commitMessage(cm))
 			c.Toast("Commit Message Copied")
 		}
-		if a.github != "" {
+		if !a.host.None() {
 			m.Separator()
-			if m.Item("Open on GitHub").Chosen() {
-				services.OpenURL(a.github + "/commit/" + cm.Hash)
+			if m.Item("Open on " + a.host.Name()).Chosen() {
+				services.OpenURL(a.host.CommitURL(cm.Hash))
 			}
 		}
 	})
@@ -865,7 +868,7 @@ func (a *app) treeItem(c *ui.Context, tree *pathTree, p string, selected, focuse
 
 // fileMenu is the part of a file's or a folder's context menu about where
 // it is: its path to copy, it in Finder or in its editor, as the work tree
-// has it, and its page on GitHub, as the commit shown has it.
+// has it, and its page on the code host, as the commit shown has it.
 func (a *app) fileMenu(services ui.Services, m *ui.Menu, p string, isDir bool) {
 	local := filepath.Join(a.repo, filepath.FromSlash(p))
 	there := exists(local)
@@ -879,17 +882,13 @@ func (a *app) fileMenu(services ui.Services, m *ui.Menu, p string, isDir bool) {
 		mygo.Shell.OpenPath(local)
 	}
 	cm, ok := a.current()
-	if a.github == "" || !ok || cm.Hash == git.Worktree {
+	if a.host.None() || !ok || cm.Hash == git.Worktree {
 		return
-	}
-	kind := "blob/"
-	if isDir {
-		kind = "tree/"
 	}
 	m.Separator()
 	gone := a.mode == modeChanges && a.changes[p].Status == "D"
-	if m.Item("Open on GitHub").Disabled(gone).Chosen() {
-		services.OpenURL(a.github + "/" + kind + git.Tip(cm.Hash) + "/" + p)
+	if m.Item("Open on " + a.host.Name()).Disabled(gone).Chosen() {
+		services.OpenURL(a.host.PathURL(git.Tip(cm.Hash), p, isDir))
 	}
 }
 
@@ -923,7 +922,7 @@ func (a *app) codePane(c *ui.Context) {
 	if a.picture != nil {
 		detail = pictureSize(a.picture)
 	}
-	jumpBar(c, a.openFile, "", func() {
+	jumpBar(c, a.openFile, git.Host{}, func() {
 		if detail != "" {
 			ui.Text(c, detail).FontSize(smallSize).TextColor(c.Theme().TextMuted).SingleLine().Shrink(0)
 		}
@@ -1061,7 +1060,7 @@ func (a *app) loadCommits() {
 				a.err = h.err.Error()
 				return
 			}
-			a.commits, a.worktreeChanges, a.branch, a.github, a.branchURL = h.commits, h.changes, h.branch, h.github, h.branchURL
+			a.commits, a.worktreeChanges, a.branch, a.host, a.branchURL = h.commits, h.changes, h.branch, h.host, h.branchURL
 			a.canPush, a.behind, a.upstream, a.dirty = h.canPush, h.behind, h.upstream, len(h.changes)
 			a.updateReviewSource(h.review, h.reviewErr)
 			if len(h.commits) > 0 {

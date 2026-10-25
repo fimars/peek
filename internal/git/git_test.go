@@ -29,34 +29,51 @@ func TestGitHubPage(t *testing.T) {
 
 // The branch's page is on the remote it tracks, none where it tracks none,
 // and the default branch's is the repository's.
-func TestBranchGitHubURL(t *testing.T) {
+func TestCurrentBranchURL(t *testing.T) {
 	repo := testutil.Repo(t)
 	testutil.Git(t, repo, "remote", "add", "origin", "git@github.com:hyoban/peek.git")
 	testutil.Git(t, repo, "remote", "add", "fork", "https://github.com/someone/peek.git")
 	testutil.Git(t, repo, "checkout", "-q", "-b", "feat/a#b")
-	if got := BranchGitHubURL(repo); got != "" {
+	if got := CurrentBranchURL(repo); got != "" {
 		t.Errorf("untracked branch's page %q, want none", got)
 	}
 	testutil.Git(t, repo, "config", "branch.feat/a#b.remote", "fork")
 	testutil.Git(t, repo, "config", "branch.feat/a#b.merge", "refs/heads/feat/a#b")
-	if got, want := BranchGitHubURL(repo), "https://github.com/someone/peek/tree/feat/a%23b"; got != want {
+	if got, want := CurrentBranchURL(repo), "https://github.com/someone/peek/tree/feat/a%23b"; got != want {
 		t.Errorf("tracked branch's page %q, want %q", got, want)
 	}
 	testutil.Git(t, repo, "update-ref", "refs/remotes/fork/develop", "HEAD")
 	testutil.Git(t, repo, "symbolic-ref", "refs/remotes/fork/HEAD", "refs/remotes/fork/develop")
 	testutil.Git(t, repo, "config", "branch.feat/a#b.merge", "refs/heads/develop")
-	if got, want := BranchGitHubURL(repo), "https://github.com/someone/peek"; got != want {
+	if got, want := CurrentBranchURL(repo), "https://github.com/someone/peek"; got != want {
 		t.Errorf("default branch's page %q, want %q", got, want)
 	}
 	testutil.Git(t, repo, "symbolic-ref", "--delete", "refs/remotes/fork/HEAD")
 	testutil.Git(t, repo, "config", "branch.feat/a#b.merge", "refs/heads/main")
 	testutil.Git(t, repo, "update-ref", "refs/remotes/fork/main", "HEAD")
-	if got, want := BranchGitHubURL(repo), "https://github.com/someone/peek"; got != want {
+	if got, want := CurrentBranchURL(repo), "https://github.com/someone/peek"; got != want {
 		t.Errorf("main's page without the remote's HEAD %q, want %q", got, want)
 	}
 	testutil.Git(t, repo, "checkout", "-q", "--detach")
-	if got := BranchGitHubURL(repo); got != "" {
+	if got := CurrentBranchURL(repo); got != "" {
 		t.Errorf("detached HEAD's page %q, want none", got)
+	}
+}
+
+// GitLab's page has its groups above the repository, and its own paths.
+func TestCurrentBranchURLGitLab(t *testing.T) {
+	repo := testutil.Repo(t)
+	testutil.Git(t, repo, "remote", "add", "origin", "git@gitlab.com:group/sub/peek.git")
+	testutil.Git(t, repo, "checkout", "-q", "-b", "feat/a#b")
+	testutil.Git(t, repo, "config", "branch.feat/a#b.remote", "origin")
+	testutil.Git(t, repo, "config", "branch.feat/a#b.merge", "refs/heads/feat/a#b")
+	if got, want := CurrentBranchURL(repo), "https://gitlab.com/group/sub/peek/-/tree/feat/a%23b"; got != want {
+		t.Errorf("tracked branch's page %q, want %q", got, want)
+	}
+	testutil.Git(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	testutil.Git(t, repo, "config", "branch.feat/a#b.merge", "refs/heads/main")
+	if got, want := CurrentBranchURL(repo), "https://gitlab.com/group/sub/peek"; got != want {
+		t.Errorf("default branch's page %q, want %q", got, want)
 	}
 }
 

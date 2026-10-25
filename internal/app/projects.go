@@ -347,7 +347,7 @@ type menuItems struct {
 	layout, nextChange, previousChange       *menuItem
 	find                                     *menuItem
 	refresh, pull, ship, review, branch      *menuItem
-	github, finder                           *menuItem
+	web, finder                              *menuItem
 }
 
 // menuItem is an item of the menu bar, and what it last showed, so that
@@ -439,7 +439,7 @@ func (p *projects) setMenu() {
 			a.openSwitcher()
 			a.switcher.focus = true
 		}),
-		github: item("Open on GitHub", "", func(a *app) { mygo.Shell.OpenExternal(cmp.Or(a.branchURL, a.github)) }),
+		web:    item("Open on GitHub", "", func(a *app) { mygo.Shell.OpenExternal(cmp.Or(a.branchURL, a.host.Page)) }),
 		finder: item("Show in Finder", "Alt+Cmd+R", func(a *app) { mygo.Shell.ShowItemInFolder(a.repo) }),
 	}
 	p.menu = m
@@ -485,7 +485,7 @@ func (p *projects) setMenu() {
 			mygo.Separator(),
 			m.branch.MenuItem,
 			mygo.Separator(),
-			m.github.MenuItem, m.finder.MenuItem,
+			m.web.MenuItem, m.finder.MenuItem,
 		}},
 		{Role: mygo.RoleWindowMenu},
 		{Role: mygo.RoleHelp},
@@ -502,7 +502,7 @@ func (p *projects) syncMenu() {
 	}
 	if a == nil {
 		for _, item := range []*menuItem{m.changes, m.files, m.sidebar, m.history, m.viewed, m.find, m.layout, m.nextChange, m.previousChange,
-			m.refresh, m.pull, m.ship, m.review, m.branch, m.github, m.finder} {
+			m.refresh, m.pull, m.ship, m.review, m.branch, m.web, m.finder} {
 			item.show(item.shownLabel, false, item.shownChecked)
 		}
 		return
@@ -540,7 +540,11 @@ func (p *projects) syncMenu() {
 	}
 	m.review.show(review, a.review.running || (a.reviewSource.ID != "" || a.reviewSourceErr != "") && !busy, false)
 	m.branch.show("Switch Branch…", a.branch != "" && !busy, false)
-	m.github.show("Open on GitHub", cmp.Or(a.branchURL, a.github) != "", false)
+	if a.host.None() {
+		m.web.show("Open on GitHub", false, false)
+	} else {
+		m.web.show("Open on "+a.host.Name(), a.host.Page != "", false)
+	}
 	m.finder.show("Show in Finder", true, false)
 }
 

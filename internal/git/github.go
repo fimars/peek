@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	neturl "net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -13,60 +12,6 @@ import (
 	"strings"
 	"time"
 )
-
-// GitHubURL returns the GitHub page of the repository, from its origin's
-// URL or else another remote's, "" where none is on GitHub.
-func GitHubURL(repo string) string {
-	out, err := git(repo, "config", "--get-regexp", `^remote\..*\.url$`)
-	if err != nil {
-		return ""
-	}
-	var found string
-	for line := range strings.Lines(out) {
-		key, url, _ := strings.Cut(strings.TrimSpace(line), " ")
-		page := githubPage(url)
-		if page == "" {
-			continue
-		}
-		if key == "remote.origin.url" {
-			return page
-		}
-		if found == "" {
-			found = page
-		}
-	}
-	return found
-}
-
-// BranchGitHubURL returns the GitHub page of the branch checked out, on
-// the remote it tracks, "" where it tracks none on GitHub, as a branch
-// never pushed or a detached HEAD. The remote's default branch has the
-// repository's own page.
-func BranchGitHubURL(repo string) string {
-	head, err := git(repo, "symbolic-ref", "--quiet", "HEAD")
-	if err != nil {
-		return ""
-	}
-	out, err := git(repo, "for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)", strings.TrimSpace(head))
-	remote, ref, _ := strings.Cut(strings.TrimSpace(out), "\x00")
-	branch, ok := strings.CutPrefix(ref, "refs/heads/")
-	if err != nil || remote == "" || !ok {
-		return ""
-	}
-	url, err := git(repo, "config", "--get", "remote."+remote+".url")
-	page := githubPage(strings.TrimSpace(url))
-	if err != nil || page == "" {
-		return ""
-	}
-	if branch == remoteDefaultBranch(repo, remote) {
-		return page
-	}
-	parts := strings.Split(branch, "/")
-	for i, p := range parts {
-		parts[i] = neturl.PathEscape(p)
-	}
-	return page + "/tree/" + strings.Join(parts, "/")
-}
 
 // remoteDefaultBranch returns the branch the remote's HEAD names, or else
 // main or master where the remote has one.
@@ -85,17 +30,10 @@ func remoteDefaultBranch(repo, remote string) string {
 // githubPage returns the page of a GitHub remote's URL, as SSH, scp-like
 // and HTTPS URLs name it, "" for another host's.
 func githubPage(url string) string {
-	rest, ok := "", false
-	for _, prefix := range []string{"git@github.com:", "ssh://git@github.com/", "https://github.com/", "http://github.com/", "git://github.com/"} {
-		if rest, ok = strings.CutPrefix(url, prefix); ok {
-			break
-		}
+	if h := hostOf(url); h.Kind == KindGitHub {
+		return h.Page
 	}
-	rest = strings.TrimSuffix(strings.TrimSuffix(rest, "/"), ".git")
-	if !ok || strings.Count(rest, "/") != 1 || strings.HasPrefix(rest, "/") || strings.HasSuffix(rest, "/") {
-		return ""
-	}
-	return "https://github.com/" + rest
+	return ""
 }
 
 // PullRequest is an open pull request of the repository, as gh lists it.

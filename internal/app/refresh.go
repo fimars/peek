@@ -14,8 +14,8 @@ type history struct {
 	commits   []git.Commit // the work tree's entry first, then the branch's
 	changes   []git.Change // the work tree's
 	branch    string
-	github    string // the repository's page on GitHub, "" for none
-	branchURL string // the branch's page on GitHub, "" for none
+	host      git.Host // the repository's code host, none for none
+	branchURL string   // the branch's page on the code host, "" for none
 	canPush   bool
 	behind    int    // the upstream's commits the branch has not
 	upstream  string // the upstream's name, where it is behind
@@ -49,7 +49,7 @@ func readHistory(repo string) history {
 	if reviewErr != nil {
 		reviewNote = reviewErr.Error()
 	}
-	return history{commits: commits, changes: changes, branch: git.CurrentBranch(repo), github: git.GitHubURL(repo), branchURL: git.BranchGitHubURL(repo),
+	return history{commits: commits, changes: changes, branch: git.CurrentBranch(repo), host: git.CodeHost(repo), branchURL: git.CurrentBranchURL(repo),
 		canPush: len(changes) > 0 || git.HasUnpushedCommits(repo), behind: behind, upstream: upstream, review: review, reviewErr: reviewNote, err: err}
 }
 
@@ -83,7 +83,7 @@ func (a *app) applyHistory(h history) {
 	chosen, wasChosen := a.hashAt(a.commitRow)
 	shown, wasShown := a.hashAt(a.loadedRow)
 	filesShown := a.filesFor >= 0 && a.filesFor == a.loadedRow
-	a.commits, a.branch, a.github, a.branchURL, a.err = h.commits, h.branch, h.github, h.branchURL, ""
+	a.commits, a.branch, a.host, a.branchURL, a.err = h.commits, h.branch, h.host, h.branchURL, ""
 	a.canPush, a.behind, a.upstream, a.dirty = h.canPush, h.behind, h.upstream, len(h.changes)
 	a.updateReviewSource(h.review, h.reviewErr)
 	a.commitRow = -1

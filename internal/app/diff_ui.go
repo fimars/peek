@@ -256,13 +256,13 @@ func (a *app) linesMenu(c *ui.Context, m *ui.Menu, d *fileDiff) {
 		c.Toast("Reference Copied")
 	}
 	cm, _ := a.current()
-	online := ok && a.github != "" && cm.Hash != git.Worktree
+	online := ok && a.host.Kind == git.KindGitHub && cm.Hash != git.Worktree
 	if m.Item("Copy GitHub Link to Lines").Disabled(!online).Chosen() {
-		services.WriteClipboard(lineLink(a.github, cm.Hash, d.change, r))
+		services.WriteClipboard(lineLink(a.host.Page, cm.Hash, d.change, r))
 		c.Toast("Link Copied")
 	}
 	if m.Item("Open Lines on GitHub").Disabled(!online).Chosen() {
-		services.OpenURL(lineLink(a.github, cm.Hash, d.change, r))
+		services.OpenURL(lineLink(a.host.Page, cm.Hash, d.change, r))
 	}
 	if m.Item("Comment on Lines").Disabled(!ok).Chosen() {
 		a.addComment(d, r)

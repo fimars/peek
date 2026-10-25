@@ -204,15 +204,40 @@ func TestGitHubButton(t *testing.T) {
 	repo := testutil.Repo(t)
 	a, tt := testApp(t, repo, nil)
 	settle(tt)
-	if a.github != "" || tt.HasText("Open on GitHub") {
+	if !a.host.None() || tt.HasText("Open on GitHub") {
 		t.Fatal("GitHub button without a remote")
 	}
 	testutil.Git(t, repo, "remote", "add", "upstream", "https://github.com/egoist/peek.git")
 	testutil.Git(t, repo, "remote", "add", "origin", "git@github.com:hyoban/peek.git")
 	a.refresh()
 	settle(tt)
-	if a.github != "https://github.com/hyoban/peek" {
-		t.Errorf("github %q, want origin's page", a.github)
+	if a.host.Kind != git.KindGitHub || a.host.Page != "https://github.com/hyoban/peek" {
+		t.Errorf("host %+v, want origin's page", a.host)
+	}
+}
+
+// A GitLab remote shows GitLab's mark and name, in GitHub's place.
+func TestGitLabButton(t *testing.T) {
+	repo := testutil.Repo(t)
+	a, tt := testApp(t, repo, nil)
+	settle(tt)
+	testutil.Git(t, repo, "remote", "add", "origin", "git@gitlab.com:group/sub/peek.git")
+	a.refresh()
+	settle(tt)
+	if a.host.Kind != git.KindGitLab || a.host.Page != "https://gitlab.com/group/sub/peek" {
+		t.Errorf("host %+v, want GitLab's page", a.host)
+	}
+	if !tt.HasText("Open on GitLab") || tt.HasText("Open on GitHub") {
+		t.Errorf("no GitLab button, texts %q", tt.Texts())
+	}
+}
+
+func TestHostIcon(t *testing.T) {
+	if hostIcon(git.KindGitLab) != gitlabIcon {
+		t.Error("GitLab's kind does not show its icon")
+	}
+	if hostIcon(git.KindGitHub) != githubIcon || hostIcon(git.KindNone) != githubIcon {
+		t.Error("other kinds do not show GitHub's icon")
 	}
 }
 
