@@ -232,7 +232,7 @@ func TestColumnsCollapse(t *testing.T) {
 func TestCommitMessageShows(t *testing.T) {
 	repo := testutil.Repo(t)
 	testutil.Git(t, repo, "add", "--all")
-	testutil.Git(t, repo, "commit", "-q", "-m", "Add the docs", "-m", "Explain why the docs moved.")
+	testutil.Git(t, repo, "-c", "user.name=Ada", "-c", "user.email=ada@example.com", "commit", "-q", "-m", "Add the docs", "-m", "Explain why the docs moved.")
 	a, tt := testApp(t, repo, nil)
 	settle(tt)
 	if tt.HasText("Explain why the docs moved.") {

@@ -34,6 +34,8 @@ func TestJSONReadsStructuredOutput(t *testing.T) {
 	t.Setenv("PEEK_TEST_GROK_PROMPT", promptFile)
 	t.Setenv("PEEK_TEST_GROK_CWD", cwdFile)
 	t.Setenv("PEEK_TEST_GROK_SCHEMA", schemaFile)
+	effortFile := filepath.Join(t.TempDir(), "effort")
+	t.Setenv("PEEK_TEST_GROK_EFFORT", effortFile)
 	const prompt, schema = "Review this change.", `{"type":"object"}`
 	data, err := JSON(context.Background(), repo, schema, prompt, time.Minute, nil)
 	if err != nil || string(data) != answer {
@@ -47,6 +49,9 @@ func TestJSONReadsStructuredOutput(t *testing.T) {
 	}
 	if got, err := os.ReadFile(schemaFile); err != nil || string(got) != schema {
 		t.Fatalf("schema %q, %v; want %q", got, err, schema)
+	}
+	if got, err := os.ReadFile(effortFile); err != nil || string(got) != "max" {
+		t.Fatalf("effort %q, %v; want max", got, err)
 	}
 }
 
@@ -81,6 +86,59 @@ func TestJSONReportsErrorEvent(t *testing.T) {
 	_, err := JSON(context.Background(), t.TempDir(), "{}", "prompt", time.Minute, nil)
 	if err == nil || !strings.Contains(err.Error(), "Grok Build returned no JSON answer: quota exceeded") {
 		t.Fatalf("error %v, want the error event's message", err)
+	}
+}
+
+func TestJSONFallsBackWhenReadOnlySandboxRefused(t *testing.T) {
+	testutil.FakeGrok(t, answer)
+	repo := t.TempDir()
+	link := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Fatal(err)
+	}
+	cwdFile := filepath.Join(t.TempDir(), "cwd")
+	countFile := filepath.Join(t.TempDir(), "count")
+	sandboxFile := filepath.Join(t.TempDir(), "sandbox")
+	t.Setenv("PEEK_TEST_GROK_READONLY_FAIL", "1")
+	t.Setenv("PEEK_TEST_GROK_SANDBOX", sandboxFile)
+	t.Setenv("PEEK_TEST_GROK_CWD", cwdFile)
+	t.Setenv("PEEK_TEST_GROK_COUNT", countFile)
+	data, err := JSON(context.Background(), link, "{}", "prompt", time.Minute, nil)
+	if err != nil || string(data) != answer {
+		t.Fatalf("answer %q, %v", data, err)
+	}
+	got, err := os.ReadFile(sandboxFile)
+	if err != nil || string(got) != "workspace" {
+		t.Fatalf("sandbox %q, %v; want workspace after read-only refused", got, err)
+	}
+	cwd, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cwd) == repo {
+		t.Fatal("the retry ran in the repository")
+	}
+	if _, err := os.Stat(filepath.Join(repo, "grok-wrote")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the retry wrote to the repository")
+	}
+	if _, err := os.Stat(string(cwd)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the copy outlived the run")
+	}
+	if count, err := os.ReadFile(countFile); err != nil || strings.Count(string(count), "1") != 2 {
+		t.Fatalf("invocations %q, %v; want two", count, err)
+	}
+}
+
+func TestJSONDoesNotRetryOtherErrors(t *testing.T) {
+	testutil.FakeGrok(t, answer)
+	countFile := filepath.Join(t.TempDir(), "count")
+	t.Setenv("PEEK_TEST_GROK_FAIL", "1")
+	t.Setenv("PEEK_TEST_GROK_COUNT", countFile)
+	if _, err := JSON(context.Background(), t.TempDir(), "{}", "prompt", time.Minute, nil); err == nil || !strings.Contains(err.Error(), "quota exceeded") {
+		t.Fatalf("error %v, want the CLI's failure", err)
+	}
+	if count, err := os.ReadFile(countFile); err != nil || strings.Count(string(count), "1") != 1 {
+		t.Fatalf("invocations %q, %v; want one", count, err)
 	}
 }
 

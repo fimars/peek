@@ -160,7 +160,12 @@ func TestLoadCommitsBody(t *testing.T) {
 func TestLoadCommitsCoAuthors(t *testing.T) {
 	dir := testutil.Repo(t)
 	msg := "Pair on it\n\nWhy it changed.\n\nCo-authored-by: Bob Lee <bob@example.com>\nco-authored-by: Ada <ADA@example.com>\nCo-authored-by: Cy <cy@example.com>\nCo-authored-by: Bob Again <bob@example.com>\n"
-	if _, err := gitWith(dir, nil, msg, "-c", "user.name=Ada", "-c", "user.email=ada@example.com",
+	if _, err := gitWith(dir, []string{
+		"GIT_AUTHOR_NAME=Ada",
+		"GIT_AUTHOR_EMAIL=ada@example.com",
+		"GIT_COMMITTER_NAME=Ada",
+		"GIT_COMMITTER_EMAIL=ada@example.com",
+	}, msg, "-c", "user.name=Ada", "-c", "user.email=ada@example.com",
 		"commit", "-q", "-a", "-F", "-"); err != nil {
 		t.Fatal(err)
 	}

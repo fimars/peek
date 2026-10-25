@@ -1,6 +1,6 @@
 // Package review has an AI agent review a repository's uncommitted changes,
 // its commits not pushed yet, or its branch's changes, and tells whether a
-// result is out of date.
+// result is out of date; and has it explain those changes or a commit's.
 package review
 
 import (
@@ -144,19 +144,19 @@ func (r Result) Text() string {
 // failed where a finding is of P0 to P2, else passed.
 func (r *Result) validate() error {
 	if strings.TrimSpace(r.Summary) == "" || r.Findings == nil {
-		return fmt.Errorf("The agent returned an incomplete review")
+		return fmt.Errorf("the agent returned an incomplete review")
 	}
 	switch r.Status {
 	case "complete":
 	case "inconclusive":
 		return fmt.Errorf("review inconclusive: %s", r.Summary)
 	default:
-		return fmt.Errorf("The agent returned an invalid review status")
+		return fmt.Errorf("the agent returned an invalid review status")
 	}
 	r.Verdict = "passed"
 	for _, f := range r.Findings {
 		if f.Priority < 0 || f.Priority > 3 || f.Line < 1 || strings.TrimSpace(f.Title) == "" || strings.TrimSpace(f.Body) == "" || strings.TrimSpace(f.Path) == "" {
-			return fmt.Errorf("The agent returned an incomplete review finding")
+			return fmt.Errorf("the agent returned an incomplete review finding")
 		}
 		if f.Priority <= blockingPriority {
 			r.Verdict = "failed"

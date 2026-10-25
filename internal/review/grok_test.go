@@ -96,6 +96,82 @@ func eventLine(t *testing.T, event any) string {
 	return string(data)
 }
 
+func TestGrokExplain(t *testing.T) {
+	testutil.FakeGrok(t, `{"explanation":"  It **starts** the program.  "}`)
+	promptFile := filepath.Join(t.TempDir(), "prompt")
+	t.Setenv("PEEK_TEST_GROK_PROMPT", promptFile)
+	repo := testutil.Repo(t)
+	head := testutil.Git(t, repo, "rev-parse", "HEAD")
+	snapshot, err := CommitSnapshot(repo, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := GrokExplain(context.Background(), repo, snapshot, nil)
+	if err != nil || text != "It **starts** the program." {
+		t.Fatalf("explanation %q, %v", text, err)
+	}
+	prompt, err := os.ReadFile(promptFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(prompt)
+	if !strings.Contains(got, "git diff --no-ext-diff --no-textconv "+snapshot.Base+" "+head+" --") {
+		t.Errorf("prompt %s", prompt)
+	}
+	if !strings.Contains(got, "one JSON object with explanation") {
+		t.Errorf("prompt missing the format restatement: %s", prompt)
+	}
+	testutil.FakeGrok(t, `{"explanation":" "}`)
+	if _, err := GrokExplain(context.Background(), repo, snapshot, nil); err == nil {
+		t.Error("an empty explanation is no error")
+	}
+}
+
+func TestGrokExplainReportsProgress(t *testing.T) {
+	answer := `{"explanation":"It starts the program."}`
+	events := strings.Join([]string{
+		eventLine(t, map[string]any{"type": "tool_call", "title": "Read", "rawInput": map[string]string{"command": "git diff --stat"}}),
+		`{"type":"tool_call_update","status":"completed"}`,
+		eventLine(t, map[string]string{"type": "thought", "data": "hidden reasoning"}),
+		eventLine(t, map[string]string{"type": "text", "data": "```json\n" + answer + "\n```"}),
+		`{"type":"end","structuredOutput":null}`,
+	}, "\n") + "\n"
+	testutil.FakeGrokEvents(t, events)
+	testutil.FakeGrok(t, answer)
+	repo := testutil.Repo(t)
+	head := testutil.Git(t, repo, "rev-parse", "HEAD")
+	snapshot, err := CommitSnapshot(repo, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var phases, details []string
+	reasoned := false
+	text, err := GrokExplain(context.Background(), repo, snapshot, func(phase, detail string) {
+		phases = append(phases, phase)
+		details = append(details, detail)
+		if strings.Contains(detail, "hidden reasoning") {
+			reasoned = true
+		}
+	})
+	if err != nil || text != "It starts the program." {
+		t.Fatalf("explanation %q, %v", text, err)
+	}
+	if reasoned {
+		t.Error("reasoning displayed")
+	}
+	for _, want := range []string{inspectingPhase, explainingPhase} {
+		if !slices.Contains(phases, want) {
+			t.Fatalf("progress %q missing %q", phases, want)
+		}
+	}
+	if slices.Contains(phases, reviewingPhase) {
+		t.Fatalf("progress %q kept review wording", phases)
+	}
+	if !slices.Contains(details, "git diff --stat") {
+		t.Fatalf("details %q missing the tool call's command", details)
+	}
+}
+
 func TestGrokReportsProgress(t *testing.T) {
 	review := "```json\n" + testutil.PassingReview + "\n```"
 	events := strings.Join([]string{
@@ -108,15 +184,19 @@ func TestGrokReportsProgress(t *testing.T) {
 	testutil.FakeGrokEvents(t, events)
 	repo := testutil.Repo(t)
 	var phases, details []string
+	reasoned := false
 	result, err := Grok(context.Background(), repo, reviewTestSnapshot(t, repo), func(phase, detail string) {
 		phases = append(phases, phase)
 		details = append(details, detail)
 		if strings.Contains(detail, "hidden reasoning") {
-			t.Fatal("reasoning displayed")
+			reasoned = true
 		}
 	})
 	if err != nil || result.Verdict != "passed" {
 		t.Fatalf("result %+v, %v", result, err)
+	}
+	if reasoned {
+		t.Error("reasoning displayed")
 	}
 	for _, want := range []string{"Inspecting…", "Reviewing…", "Checking…"} {
 		if !slices.Contains(phases, want) {

@@ -35,7 +35,7 @@ func TestParseAgent(t *testing.T) {
 func TestAgentMenu(t *testing.T) {
 	a, tt := testApp(t, testutil.Repo(t), nil)
 	settle(tt)
-	if err := tt.Click("Ship and Review with Codex"); err != nil {
+	if err := tt.Click("Ship, Review, and Explain with Codex"); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := tt.Menu(), []string{"Codex", "Grok Build"}; !slices.Equal(got, want) {
@@ -45,7 +45,7 @@ func TestAgentMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if a.agentKind() != agentGrok || !tt.HasText("Ship and Review with Grok Build") {
+	if a.agentKind() != agentGrok || !tt.HasText("Ship, Review, and Explain with Grok Build") {
 		t.Fatalf("agent %q, texts %q", a.agentKind(), tt.Texts())
 	}
 	for _, busy := range []struct {
@@ -54,10 +54,14 @@ func TestAgentMenu(t *testing.T) {
 	}{
 		{"shipping", func() { a.push = pushState{running: true} }},
 		{"reviewing", func() { a.push = pushState{}; a.review = reviewState{running: true} }},
+		{"explaining", func() {
+			a.push, a.review = pushState{}, reviewState{}
+			a.explain = explainState{codexTask: codexTask{running: true}}
+		}},
 	} {
 		busy.set()
 		tt.Frame()
-		if err := tt.Click("Ship and Review with Grok Build"); err != nil {
+		if err := tt.Click("Ship, Review, and Explain with Grok Build"); err != nil {
 			t.Fatal(err)
 		}
 		if got := tt.Menu(); len(got) != 0 {
@@ -98,7 +102,7 @@ func TestAgentFlows(t *testing.T) {
 	t.Setenv("PEEK_TEST_GROK_PROMPT", prompt)
 	a, tt := testApp(t, repo, nil)
 	settle(tt)
-	if err := tt.Click("Ship and Review with Codex"); err != nil {
+	if err := tt.Click("Ship, Review, and Explain with Codex"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tt.ChooseMenuItem("Grok Build"); err != nil {

@@ -41,10 +41,11 @@ All of the commit's files, to read any of them as it was then.
 - Fetches the branch's remote every few minutes, shows how many new commits it has beside the branch, and pulls them by fast-forward with a click
 - **Ship**: commit all changes with a message written by Codex or Grok Build, and push, from the history's toolbar
 - **Review**: have the chosen agent review the uncommitted changes, the unpushed commits or the branch's changes, from the history's toolbar
+- **Explain**: have the chosen agent explain the changes shown, the uncommitted changes, a commit or the branch's, from the history's toolbar
 - **Show in Menu Bar**, in the app menu, puts Peek in the menu bar in place of the Dock: its menu lists the recent repositories with their branches and the files they change, and the commits to pull, pulled with a click, whose count shows beside its icon; a right click brings Peek to the front
 - **Hide When Inactive**, in the app menu, hides Peek as another app comes to the front
 - The remotes' new commits counted on the Dock icon, while it shows
-- A notification when shipping or a review finishes while Peek is in the background
+- A notification when shipping, a review or an explanation finishes while Peek is in the background
 - Fetches wait while offline or on a metered connection, and run as the network comes back
 - Every command in the menu bar, as Mac apps have them
 - Follows the system's light and dark appearance
@@ -70,6 +71,7 @@ All of the commit's files, to read any of them as it was then.
 | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>P</kbd> | Pull |
 | <kbd>⌘</kbd> <kbd>P</kbd> | Ship |
 | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>R</kbd> | Review changes |
+| <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>E</kbd> | Explain changes |
 | <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>R</kbd> | Show the repository in Finder |
 
 ## Usage
@@ -84,10 +86,10 @@ Without a path, Peek opens the repository you are in, or else the ones open when
 
 ### Choose the agent
 
-Codex is the default for both Ship and Review. Click the icon left of **Review**
-and choose **Grok Build** to use Grok Build for both, or **Codex** to go back.
+Codex is the default for Ship, Review, and Explain. Click the icon left of **Explain**
+and choose **Grok Build** to use Grok Build for all three, or **Codex** to go back.
 The choice is kept in the `agent` file of Peek's config folder, applies to every
-repository, and survives a restart. Ship and Review use the chosen agent's login
+repository, and survives a restart. Ship, Review, and Explain use the chosen agent's login
 and settings.
 
 Codex needs the Codex CLI and `codex login`. Grok Build needs the `grok` CLI and
@@ -104,7 +106,7 @@ change too large to embed whole comes with a summary of every file, leaving
 the agent to read more of the fixed staged tree in a read-only sandbox only if
 it must. Codex writes it with a small, fast model and low reasoning, apart from
 your Codex config, whose plugins and hooks suit coding sessions. Grok Build
-uses your configured model and login. Before committing, Peek verifies that the
+uses your configured model and login, at max reasoning. Before committing, Peek verifies that the
 branch, HEAD and staged tree are unchanged.
 
 Peek fetches the remote, commits, then pushes the current branch. If the remote
@@ -134,11 +136,10 @@ When finished, it shows **Passed**, **Not Passed**, or **Review Error**.
 Peek judges the result by the findings' priorities: any P0–P2 finding fails
 the review, while minor P3 findings alone still pass and show with it.
 Click a completed result to read the summary and findings, copy them, or
-review again. A failed review automatically copies them to the clipboard.
-Click while running to cancel. Changing the reviewed code makes the result
+review again. Click while running to cancel. Changing the reviewed code makes the result
 out of date, and the button offers **Review Again**. With no changes to review, the button is disabled.
 
-Review uses the chosen agent's login and settings. Peek supplies the repository,
+Review uses the chosen agent's login and settings; Grok Build runs at max reasoning. Peek supplies the repository,
 review scope and fixed commit IDs; the agent reads the Git diffs and relevant
 files itself in a read-only sandbox. File contents and binary assets are not
 embedded in the prompt. Peek fingerprints changed files with streaming hashes to
@@ -148,6 +149,15 @@ a failed review does not prevent a later push. The two operations cannot run
 at the same time. Review has no assembled-diff size limit; Git metadata output
 is still bounded. Dirty submodules must be committed or cleaned before
 reviewing, including untracked files inside them.
+
+### Explain with an agent
+
+Click **Explain** in the history's toolbar (or press <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>E</kbd>) to have the chosen agent
+explain the changes of the entry chosen in the history: the uncommitted changes, a commit, or the branch's
+changes. As for a review, Peek only tells the agent where the changes are, and the agent reads them and the code
+around them itself, in a read-only sandbox with your settings. Once it is ready the button reads **Explanation**;
+click it to read it, in Markdown, copy it, or explain again. An explanation of the uncommitted
+changes goes out of date as they change. Explain can run while a review is under way.
 
 To build `Peek.app` and a `.dmg` into `build/`:
 

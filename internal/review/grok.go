@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"peek/internal/grok"
 	"strings"
 	"time"
@@ -13,15 +12,28 @@ import (
 // Grok has Grok Build review the snapshot's changes, in its read-only
 // sandbox.
 func Grok(ctx context.Context, repo string, snapshot Snapshot, progress func(string, string)) (Result, error) {
-	var events io.Writer
-	if progress != nil {
-		events = &grokProgress{report: progress}
-	}
-	data, err := grok.JSON(ctx, repo, reviewSchema, reviewPrompt(snapshot)+grokReviewFormat, 10*time.Minute, events)
+	data, err := grok.JSON(ctx, repo, reviewSchema, reviewPrompt(snapshot)+grokReviewFormat, 10*time.Minute, grokProgressTo(progress, "", ""))
 	if err != nil {
 		return Result{}, err
 	}
 	return parseGrokReview(data)
+}
+
+// grokExplainFormat names the schema's field, which the model has left
+// out or answered around despite the schema.
+const grokExplainFormat = "\n\nAnswer with one JSON object with explanation, " +
+	"its value the whole explanation in Markdown."
+
+// GrokExplain has Grok Build explain the changes of the snapshot, in
+// Markdown, reading the changes and the code around them itself, in its
+// read-only sandbox.
+func GrokExplain(ctx context.Context, repo string, snapshot Snapshot, progress func(string, string)) (string, error) {
+	data, err := grok.JSON(ctx, repo, explainSchema, explainPrompt(snapshot)+grokExplainFormat, 10*time.Minute,
+		grokProgressTo(progress, explainingPhase, "Grok Build is explaining the changes"))
+	if err != nil {
+		return "", err
+	}
+	return parseExplanation(data)
 }
 
 // grokReviewFormat names the schema's fields, which the model has left out

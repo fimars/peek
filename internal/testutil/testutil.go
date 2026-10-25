@@ -17,7 +17,8 @@ import (
 // returns what it printed, trimmed.
 func Git(t *testing.T, repo string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	args = append([]string{"-C", repo, "-c", "user.name=Ada", "-c", "user.email=ada@example.com"}, args...)
+	cmd := exec.Command("git", args...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -168,16 +169,31 @@ cp "$PEEK_TEST_REVIEW_RESPONSE" "$output"
 // grokScript answers as Grok Build's streaming JSON does: the events file,
 // then the response as the end event's structured output.
 const grokScript = `#!/bin/sh
+if [ -n "$PEEK_TEST_GROK_COUNT" ]; then printf '1\n' >> "$PEEK_TEST_GROK_COUNT"; fi
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --prompt-file) shift; if [ -n "$PEEK_TEST_GROK_PROMPT" ]; then cp "$1" "$PEEK_TEST_GROK_PROMPT"; fi ;;
-    --cwd) shift; if [ -n "$PEEK_TEST_GROK_CWD" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_CWD"; fi ;;
+    --cwd) shift; cwd="$1"; if [ -n "$PEEK_TEST_GROK_CWD" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_CWD"; fi ;;
     --json-schema) shift; if [ -n "$PEEK_TEST_GROK_SCHEMA" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_SCHEMA"; fi ;;
-    --sandbox) shift; test "$1" = read-only || exit 2 ;;
+    --sandbox) shift
+      if [ -n "$PEEK_TEST_GROK_SANDBOX" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_SANDBOX"; fi
+      if [ "$1" = workspace ] && [ -n "$cwd" ]; then : > "$cwd/grok-wrote"; fi
+      if [ -n "$PEEK_TEST_GROK_READONLY_FAIL" ]; then
+        if [ "$1" = read-only ]; then
+          echo "warning: sandbox could not be applied: socket deny resolution failed: could not resolve runtime-socket deny path /var/run/docker.sock: endpoint is a symlink to a path outside the deny list" >&2
+          echo "error: could not apply the 'read-only' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing." >&2
+          exit 1
+        fi
+        test "$1" = workspace || exit 2
+      else
+        test "$1" = read-only || exit 2
+      fi ;;
+    --reasoning-effort) shift; if [ -n "$PEEK_TEST_GROK_EFFORT" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_EFFORT"; fi ;;
     --output-format) shift; test "$1" = streaming-json || exit 3 ;;
   esac
   shift
 done
+if [ -n "$PEEK_TEST_GROK_FAIL" ]; then echo "error: quota exceeded" >&2; exit 1; fi
 if [ -n "$PEEK_TEST_GROK_EVENTS" ]; then cat "$PEEK_TEST_GROK_EVENTS"; fi
 if [ -n "$PEEK_TEST_GROK_RESPONSE" ]; then
   printf '{"type":"end","structuredOutput":'

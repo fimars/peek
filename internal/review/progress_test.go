@@ -10,6 +10,22 @@ import (
 	"testing"
 )
 
+func TestRewordKeepsInspecting(t *testing.T) {
+	var got [][2]string
+	report := reword(func(p, d string) { got = append(got, [2]string{p, d}) }, explainingPhase, "Codex is explaining the changes")
+	report(inspectingPhase, "git diff")
+	report(reviewingPhase, "Codex is reviewing the collected context")
+	report(checkingPhase, "Validating the review result and checking for changes")
+	want := [][2]string{
+		{inspectingPhase, "git diff"},
+		{explainingPhase, "Codex is explaining the changes"},
+		{explainingPhase, "Codex is explaining the changes"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("progress %v, want %v", got, want)
+	}
+}
+
 func TestCodexProgressStream(t *testing.T) {
 	var phases []string
 	w := &progressWriter{report: func(phase, detail string) {

@@ -60,7 +60,8 @@ type app struct {
 	upstream                 string // the upstream's name, where the branch is behind it
 	pull                     pullState
 	review                   reviewState
-	agent                    agentKind // the AI agent Ship and Review use
+	agent                    agentKind // the AI agent Ship, Review, and Explain use
+	explain                  explainState
 	// reviewSource is what a review is of where the work tree or a commit
 	// shows: the uncommitted changes, else the commits not pushed yet.
 	reviewSource    review.Snapshot
@@ -72,7 +73,11 @@ type app struct {
 	// focus and inactiveTheme the one of lists without it.
 	theme, listTheme, inactiveTheme *ui.Theme
 	titleButton                     ui.Handle // the project's name, under which the projects list
+	endTools                        ui.Handle // the controls at the end of the text's toolbar
+	endWidth                        float32   // their width, as last laid out
 	alert                           alertState
+	// The windows of AppKit's own the sheets and the switcher show in.
+	reviewSheet, explainSheet, switcherPopover child
 
 	showHistory, showTree   bool
 	historyWidth, treeWidth float32
@@ -146,8 +151,8 @@ func newApp(repo string) *app {
 	}
 }
 
-// agentKind is the agent Ship and Review use: the projects' where there are,
-// else this app's, as tests keep it.
+// agentKind is the agent Ship, Review, and Explain use: the projects'
+// where there are, else this app's, as tests keep it.
 func (a *app) agentKind() agentKind {
 	if a.projects != nil {
 		return a.projects.agent
@@ -182,6 +187,7 @@ const (
 func (a *app) themed(c *ui.Context) {
 	t := c.Theme() // a copy for this pass
 	t.FontSize = fontSize * c.Preferences().TextScale
+	unhovered(t)
 	c.SetTheme(t)
 	// Rows show nothing under the pointer, as AppKit's tables and outlines.
 	list := *t
@@ -252,6 +258,7 @@ func (a *app) view(c *ui.Context) {
 	a.branchSwitcher(c)
 	a.alerts(c)
 	a.reviewDetails(c)
+	a.explanationDetails(c)
 	a.sync(c)
 	if a.redraw {
 		a.redraw = false
@@ -323,10 +330,10 @@ func endSplit(c *ui.Context, size *float32, end, rest func()) ui.Element {
 // toolbarPart is the part of the window's toolbar over a column: a row of
 // the title bar's height, which drags the window, leaving the traffic
 // lights their room at the window's start and the window's edge at its
-// end. Its groups of controls are ui.Toolbars, which take no face until
-// hovered, Tab stopping on each once and the arrows moving among their
-// controls; the names, which their toolbar would put in its overflow menu
-// for want of room, are out of them, to be cut short.
+// end. Its groups of controls are ui.Toolbars, which take no face, Tab
+// stopping on each once and the arrows moving among their controls; the
+// names, which their toolbar would put in its overflow menu for want of
+// room, are out of them, to be cut short.
 func toolbarPart(c *ui.Context, start, end bool, build func()) {
 	t := c.Theme()
 	bar := c.TitleBar()
@@ -341,16 +348,25 @@ func toolbarPart(c *ui.Context, start, end bool, build func()) {
 		Padding(0, right, 0, left).Gap(t.Space(1)).DragWindow().Children(build)
 }
 
-// toolGroup is a group of the toolbar's controls, built by build.
+// toolGroup is a group of the toolbar's controls, built by build, which
+// show nothing under the pointer, as the items of AppKit's toolbars.
 func toolGroup(c *ui.Context, label string, build func()) ui.Element {
-	return ui.Toolbar(c, build).Shrink(0).Padding(0).Label(label)
+	t := c.Theme()
+	bare := *t
+	bare.SurfaceHover = ui.Transparent
+	return ui.Toolbar(c, func() {
+		c.SetTheme(&bare)
+		build()
+		c.SetTheme(t)
+	}).Shrink(0).Padding(0).Label(label)
 }
 
-// actions are the toolbar's work on the commits: reviewing the changes
-// and shipping them, over the history, which they add to, or at the end
-// of the text's part while the history hides.
+// actions are the toolbar's work on the commits: explaining and
+// reviewing the changes and shipping them, over the history, which they
+// add to, or at the end of the text's part while the history hides.
 func (a *app) actions(c *ui.Context) {
 	a.agentButton(c)
+	a.explainButton(c)
 	a.reviewButton(c)
 	a.pushButton(c)
 }
@@ -388,8 +404,13 @@ func (a *app) toolbar(c *ui.Context, start, end bool) {
 			modeSwitch(c.Key("mode"), &a.modeChoice, "Changes", "Files").Label("Mode").
 				OnChange(func() { a.setMode(a.modeChoice) })
 		})
-		// Both sides as wide, so that the mode stays in the middle.
-		ui.Row(c).Grow(1).Basis(0).MinWidth(0).AlignItems(ui.Center).Justify(ui.End).Gap(t.Space(1)).Children(func() {
+		// Both sides as wide, so that the mode stays in the middle, where
+		// the controls at the end have the room, as they had last: else the
+		// mode gives way, as an NSToolbar's centered item does.
+		if w := a.endTools.Bounds(c).W; w != a.endWidth {
+			a.endWidth, a.redraw = w, true
+		}
+		ui.Row(c).Grow(1).Basis(0).MinWidth(a.endWidth).AlignItems(ui.Center).Justify(ui.End).Gap(t.Space(1)).Children(func() {
 			toolGroup(c, "Toolbar", func() {
 				if page := a.webPage(); page != "" {
 					a.linkButton(c, "host", hostIcon(a.host.Kind), "Open on "+a.host.Name(), page)
@@ -398,7 +419,7 @@ func (a *app) toolbar(c *ui.Context, start, end bool) {
 					a.actions(c)
 					a.paneButton(c, "history", historyIcon, &a.showHistory, &a.collapsedHistory, "History")
 				}
-			})
+			}).Bind(&a.endTools)
 		})
 	})
 }
@@ -414,9 +435,9 @@ func modeSwitch(c *ui.Context, selected *int, labels ...string) ui.Element {
 		w, _ := c.MeasureText(0, ui.Span{Text: label, Size: t.FontSize})
 		widest = max(widest, w)
 	}
-	track, chosen, hover := t.Text.Alpha(0.06), t.Background, t.Text.Alpha(0.04)
+	track, chosen := t.Text.Alpha(0.06), t.Background
 	if t.Dark {
-		track, chosen, hover = t.Text.Alpha(0.1), t.Text.Alpha(0.24), t.Text.Alpha(0.06)
+		track, chosen = t.Text.Alpha(0.1), t.Text.Alpha(0.24)
 	}
 	parts := ui.SegmentedBase(c, selected, len(labels))
 	parts.Track.Height(24).AlignItems(ui.Stretch).Padding(inset).Gap(inset).Radius(7).Background(track)
@@ -425,12 +446,10 @@ func modeSwitch(c *ui.Context, selected *int, labels ...string) ui.Element {
 	}
 	parts.Track.Children(func() {
 		for i, label := range labels {
+			// Nothing under the pointer, as NSSegmentedControl.
 			s := parts.Segment(i).Width(widest + 2*pad).Radius(5).TextColor(t.Text)
-			switch {
-			case i == *selected:
+			if i == *selected {
 				s.Background(chosen).Shadow(0, 1, 2, 0, ui.RGBA(0, 0, 0, 0.15))
-			case s.Hovered():
-				s.Background(hover)
 			}
 			s.Children(func() { ui.Text(c, label).FontSize(t.FontSize).SingleLine() })
 		}
@@ -717,6 +736,7 @@ func (a *app) commitMenu(c *ui.Context, item ui.Element, i int, cm git.Commit) {
 func (a *app) personAvatar(c *ui.Context, name, email string, size float32) ui.Element {
 	box := ui.Box(c).Size(size, size).Shrink(0).Radius(size / 2).Role(ui.RoleImage).Label(name)
 	if bm := a.avatar(email); bm != nil {
+		a.avatars.show(bm)
 		return box.Clip().Children(func() {
 			ui.Image(c, bm).Fit(ui.Cover).Size(size, size)
 		})
