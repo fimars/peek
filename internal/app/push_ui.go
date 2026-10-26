@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"peek/internal/git"
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -18,15 +17,13 @@ type pushState struct {
 
 func (a *app) pushButton(c *ui.Context) { drawTool(c, "push", a.pushTool(c)) }
 
-// pushTool is the Ship button as the push's state has it.
+// pushTool is the Ship button as the push's state has it: Shipping… for
+// as long as it runs, its stage in the tooltip, for the button to keep
+// its width as the stages, most of them a moment's, pass.
 func (a *app) pushTool(c *ui.Context) toolButton {
 	def := agentDefOf(a.agentKind())
 	if a.push.running {
-		text := "Shipping…"
-		if phase, _, ok := strings.Cut(a.push.status, " "); ok {
-			text = phase + "…"
-		}
-		return toolButton{label: text, tooltip: a.push.status, busy: true, stop: "Stop Shipping", cancel: func() { a.push.cancel() }}
+		return toolButton{label: "Shipping…", tooltip: a.push.status, busy: true, stop: "Stop Shipping", cancel: func() { a.push.cancel() }}
 	}
 	if a.push.status != "" {
 		if a.push.until.IsZero() {

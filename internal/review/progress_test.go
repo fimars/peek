@@ -10,22 +10,6 @@ import (
 	"testing"
 )
 
-func TestRewordKeepsInspecting(t *testing.T) {
-	var got [][2]string
-	report := reword(func(p, d string) { got = append(got, [2]string{p, d}) }, explainingPhase, "Codex is explaining the changes")
-	report(inspectingPhase, "git diff")
-	report(reviewingPhase, "Codex is reviewing the collected context")
-	report(checkingPhase, "Validating the review result and checking for changes")
-	want := [][2]string{
-		{inspectingPhase, "git diff"},
-		{explainingPhase, "Codex is explaining the changes"},
-		{explainingPhase, "Codex is explaining the changes"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("progress %v, want %v", got, want)
-	}
-}
-
 func TestCodexProgressStream(t *testing.T) {
 	var phases []string
 	w := &progressWriter{report: func(phase, detail string) {
@@ -70,7 +54,7 @@ func TestCodexReviewStreamsBeforeCompletion(t *testing.T) {
 	t.Setenv("PEEK_TEST_CODEX_ACK", ack)
 	repo := testutil.Repo(t)
 	var callbackErr error
-	result, err := Codex(context.Background(), repo, reviewTestSnapshot(t, repo), func(phase, detail string) {
+	result, err := Codex(context.Background(), repo, reviewTestSnapshot(t, repo), "", func(phase, detail string) {
 		if phase == "Inspecting…" && detail == "git diff" {
 			callbackErr = os.WriteFile(ack, nil, 0o600)
 		}

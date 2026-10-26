@@ -130,48 +130,6 @@ func activity(c *ui.Context, key, text, tooltip, stop string, cancel func()) {
 		Children(func() { ui.Icon(c, stopIcon).Size(12, 12) }).OnClick(cancel)
 }
 
-// sheet shows a dialog while *open is true, as AppKit's sheets: AppKit's
-// own, in a window of its own, where there are windows, else attached
-// under the toolbar, what is behind it waiting and a click there doing
-// nothing. Escape and Return close it, Done being its default button,
-// last of the buttons that buttons builds.
-func (a *app) sheet(c *ui.Context, ch *child, open *bool, label string, width, height float32, body, buttons func(c *ui.Context)) {
-	content := func(c *ui.Context, panel ui.Element) {
-		t := c.Theme()
-		panel.Gap(t.Space(3)).Padding(t.Space(5)).Role(ui.RoleDialog).Label(label).Children(func() {
-			body(c)
-			ui.Row(c).FillWidth().Shrink(0).AlignItems(ui.Center).Gap(t.Space(2)).Children(func() {
-				buttons(c)
-				ui.PrimaryButton(c.Key("done"), "Done").OnClick(func() { *open = false })
-			})
-		})
-	}
-	if a.native() {
-		a.nativeSheet(ch, open, int(width), int(height), func(c *ui.Context) {
-			content(c, ui.Column(c).Fill().MinHeight(0))
-			if c.Shortcut(0, ui.KeyEscape) || c.Shortcut(0, ui.KeyEnter) {
-				*open = false
-			}
-		})
-		return
-	}
-	if !*open {
-		return
-	}
-	t := c.Theme()
-	ui.Overlay(c, func() {
-		back := ui.Column(c.Key("sheet:"+label)).Absolute().Left(0).Top(0).Right(0).Bottom(0).
-			AlignItems(ui.Center).Padding(titleBarHeight, t.Space(4), t.Space(4), t.Space(4)).Modal()
-		back.Children(func() {
-			content(c, ui.Column(c).Width(width).Height(height).Shrink(1).MinHeight(0).MaxWidthPercent(100).
-				Radius(12).Background(t.Background).Border(1, t.Border).Shadow(0, 10, 30, 0, ui.RGBA(0, 0, 0, 0.25)))
-		})
-		if back.OverlayShortcut(0, ui.KeyEscape) || back.OverlayShortcut(0, ui.KeyEnter) {
-			*open = false
-		}
-	})
-}
-
 // alertState is an alert about what failed meanwhile, such as a push,
 // over the window until the user answers it; shown, once AppKit shows it.
 type alertState struct {
@@ -206,43 +164,35 @@ func (a *app) alerts(c *ui.Context) {
 	}()
 }
 
-// searchField is a search field as AppKit's, as ui.SearchField draws one,
-// with a placeholder of its own and its input bound, for the menu bar to
-// put the keys in it and for Down to leave it: a magnifying glass, the
-// text, and a button clearing it while it holds any, as Escape does then.
-func searchField(c *ui.Context, key string, query *string, placeholder, label string, input *ui.Handle, focus *bool, down func()) ui.Element {
-	t := c.Theme()
-	focused := input.FocusWithin(c)
-	f := ui.Row(c.Key(key)).AlignItems(ui.Center).Gap(t.Space(1.5)).Padding(t.Space(1), t.Space(2)).
-		Radius(t.Radius).Background(t.Surface).Border(1, t.Border)
-	if focused {
-		f.Border(1, t.Accent).Shadow(0, 0, 0, 3, t.Focus)
+// xcodeGrays gives the theme the neutral grays of Xcode's and AppKit's
+// windows in place of its own, cooler and darker ones: the text over the
+// editor's gray, the controls' fills and the separators between them,
+// and the labels' grays, as they are over it. The accent is the
+// system's still, and Increase Contrast sharpens them as it does the
+// theme's.
+func xcodeGrays(t *ui.Theme, highContrast bool) {
+	if t.Dark {
+		t.Background = ui.Hex("#262626")
+		t.Surface, t.SurfaceHover, t.SurfacePressed = ui.Hex("#323232"), ui.Hex("#3a3a3a"), ui.Hex("#454545")
+		t.Border = ui.Hex("#3c3c3c")
+		t.Text, t.TextMuted = ui.Hex("#dfdfdf"), ui.Hex("#9f9f9f")
+	} else {
+		t.Background = ui.Hex("#ffffff")
+		t.Surface, t.SurfaceHover, t.SurfacePressed = ui.Hex("#f2f2f2"), ui.Hex("#e8e8e8"), ui.Hex("#dddddd")
+		t.Border = ui.Hex("#e3e3e3")
+		t.Text, t.TextMuted = ui.Hex("#262626"), ui.Hex("#808080")
 	}
-	f.Children(func() {
-		ui.Icon(c, searchIcon).Size(14, 14).Shrink(0).TextColor(t.TextMuted)
-		in := ui.TextInputBase(c.Key(key+":input"), query).Bind(input).Grow(1).MinWidth(0).
-			Placeholder(placeholder).Label(label).OnTextKey(func(k ui.TextKey) bool {
-			switch {
-			case k.Mods == 0 && k.Key == ui.KeyDown:
-				down()
-			case k.Mods == 0 && k.Key == ui.KeyEscape && *query != "":
-				k.SetText("")
-				*query = ""
-			default:
-				return false
-			}
-			return true
-		})
-		if *focus {
-			*focus = false
-			in.Focus()
-		}
-		if *query != "" {
-			clear := ui.ButtonBase(c.Key(key+":clear")).Size(16, 16).Shrink(0).Center().Radius(8).
-				Background(t.TextMuted.Alpha(0.5)).Label("Clear").KeepFocus()
-			clear.OnClick(func() { *query = "" })
-			clear.Children(func() { ui.Icon(c, clearIcon).Size(8, 8).TextColor(t.Background) })
-		}
-	})
-	return f
+	if highContrast {
+		t.Border = t.Border.Mix(t.Text, 0.45)
+		t.TextMuted = t.TextMuted.Mix(t.Text, 0.4)
+	}
+}
+
+// chromeColor is the band of the toolbar and the jump bar over the text,
+// a shade off the text's, as Xcode's over its editor.
+func chromeColor(t *ui.Theme) ui.Color {
+	if t.Dark {
+		return t.Background.Mix(ui.Hex("#ffffff"), 0.035)
+	}
+	return t.Background.Mix(ui.Hex("#000000"), 0.025)
 }

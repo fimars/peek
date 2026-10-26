@@ -75,7 +75,6 @@ func (a *app) openChanges(known map[string][]string) {
 			t.state.Open.Add(dir)
 		}
 	}
-	t.remember()
 	if t.reveal != "" {
 		t.choose(t.reveal) // whose row the folders opened move
 	}
@@ -85,6 +84,12 @@ func (a *app) indexDiffs() {
 	a.diffOf = make(map[string]*fileDiff, len(a.diffs))
 	for _, d := range a.diffs {
 		a.diffOf[d.change.Path] = d
+	}
+	a.groupDiffs = map[string][]*fileDiff{}
+	for _, item := range a.changeTree.dirs[""] {
+		if isGroup(item) {
+			a.groupDiffs[item] = a.filesDiffs(a.changeTree.filesUnder(item))
+		}
 	}
 }
 
@@ -119,18 +124,23 @@ func (a *app) setRead(d *fileDiff, read bool) {
 func (a *app) diffsUnder(item string) []*fileDiff {
 	t := &a.changeTree
 	if !t.isDir(item) {
-		if d := a.diffOf[item]; d != nil {
-			return []*fileDiff{d}
-		}
-		return nil
+		return a.filesDiffs([]string{item})
 	}
-	var under []*fileDiff
-	for _, p := range t.filesUnder(item) {
+	if diffs, ok := a.groupDiffs[item]; ok {
+		return diffs
+	}
+	return a.filesDiffs(t.filesUnder(item))
+}
+
+// filesDiffs returns the diffs of these files.
+func (a *app) filesDiffs(files []string) []*fileDiff {
+	var diffs []*fileDiff
+	for _, p := range files {
 		if d := a.diffOf[p]; d != nil {
-			under = append(under, d)
+			diffs = append(diffs, d)
 		}
 	}
-	return under
+	return diffs
 }
 
 // lineCounts shows the lines added and deleted, green and red as GitHub's.

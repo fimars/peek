@@ -21,50 +21,36 @@ func TestReviewUI(t *testing.T) {
 	testutil.FakeReviewCodex(t, testutil.PassingReview)
 	a, tt := testApp(t, repo, nil)
 	tt.SetClipboard("Keep this clipboard")
-	if err := tt.Click("Review"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if a.review.running || !tt.HasText("Passed") || a.review.open {
+	askCodex(t, tt, "Review")
+	conv := a.shownConversation()
+	if a.review.running || !tt.HasText("Passed") || conv == nil || conv.Title != "Review" || conv.Turns[0].Review == nil {
 		t.Fatalf("unexpected result: %+v, %q", a.review, tt.Texts())
 	}
 	if tt.Clipboard() != "Keep this clipboard" {
 		t.Fatal("passing review changed the clipboard")
 	}
-	if err := tt.Click("Passed"); err != nil {
-		t.Fatal(err)
-	}
-	if !tt.HasText("No actionable defects found.") {
-		t.Fatal("missing review details")
-	}
-	if err := tt.Click("Done"); err != nil {
-		t.Fatal(err)
+	// The review shows in its conversation.
+	if !tt.HasText("No actionable defects found.") || !tt.HasText("Review passed") {
+		t.Fatal("missing review details", tt.Texts())
 	}
 	if err := os.WriteFile(filepath.Join(repo, "docs/new.md"), []byte("new content\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	a.refresh()
 	tt.Frame()
-	if !tt.HasText("Review Again") || tt.HasText("Passed") {
+	if _, ok := tt.Find("Passed"); ok {
 		t.Fatal("stale verdict still shown", tt.Texts())
 	}
 	if err := os.WriteFile(os.Getenv("PEEK_TEST_REVIEW_RESPONSE"), []byte(testutil.FailingReview), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := tt.Click("Review Again"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if !tt.HasText("Not Passed") {
+	askCodex(t, tt, "Review")
+	if !tt.HasText("Not Passed") || len(a.conversations) != 2 {
 		t.Fatal("missing failing verdict", tt.Texts())
 	}
 	wantClipboard := "Review not passed\nUncommitted changes\n\nEmpty inputs now crash.\n\n[P2] Handle empty inputs\ncalc.py:2\nRestore the guard so an empty list does not divide by zero."
 	if got := tt.Clipboard(); got != "Keep this clipboard" {
 		t.Fatalf("failing review changed the clipboard: %q", got)
-	}
-	tt.SetClipboard("Copied something else")
-	if err := tt.Click("Not Passed"); err != nil {
-		t.Fatal(err)
 	}
 	if !tt.HasText("calc.py:2") || !tt.HasText("[P2] Handle empty inputs") {
 		t.Fatal("missing findings", tt.Texts())
@@ -79,11 +65,8 @@ func TestReviewUI(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("PEEK_TEST_REVIEW_RESPONSE"), []byte("not JSON"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := tt.Click("Review Again"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if !tt.HasText("Review Error") || tt.HasText("Passed") {
+	askCodex(t, tt, "Review")
+	if !tt.HasText("Review Error") || tt.HasText("Not Passed") {
 		t.Fatal("invalid result treated as a verdict", tt.Texts())
 	}
 	if tt.Clipboard() != "Copied something else" {
@@ -159,6 +142,7 @@ func TestReviewCancelAndLayout(t *testing.T) {
 			t.Fatal("progress moved the mode switch")
 		}
 		a.review = reviewState{result: &review.Result{Verdict: "passed", Summary: "Passed"}}
+		a.lastCodex = codexReview
 		tt.Advance(time.Second)
 		tt.Frame()
 		if !tt.HasText("Passed") || tt.HasText("Inspecting… 13s") {
@@ -173,8 +157,7 @@ func TestReviewNothingToDo(t *testing.T) {
 	testutil.Git(t, repo, "commit", "-m", "Update the files")
 	testutil.Git(t, repo, "push")
 	a, tt := testApp(t, repo, nil)
-	_ = tt.Click("Review")
-	a.startReview(ui.Services{})
+	a.startReview("")
 	tt.Frame()
 	if a.reviewSource.ID != "" || a.review.running || a.review.err != "" || a.review.result != nil {
 		t.Fatalf("review ran with nothing to review: %+v", a.review)
@@ -182,7 +165,7 @@ func TestReviewNothingToDo(t *testing.T) {
 	a.review = reviewState{sourceID: "old", result: &review.Result{Verdict: "passed"}}
 	a.updateReviewSource(review.Snapshot{}, "")
 	tt.Frame()
-	if !tt.HasText("Review") || tt.HasText("Review Again") || tt.HasText("Passed") {
+	if _, ok := tt.Find("Ask Codex"); !ok || tt.HasText("Passed") {
 		t.Fatal("obsolete result still invites a review", tt.Texts())
 	}
 }
@@ -193,7 +176,10 @@ func TestReviewSnapshot(t *testing.T) {
 	if err := json.Unmarshal([]byte(testutil.FailingReview), &result); err != nil {
 		t.Fatal(err)
 	}
-	a.review = reviewState{result: &result, scope: "Uncommitted changes", open: true}
+	a.review = reviewState{result: &result, scope: "Uncommitted changes"}
+	a.lastCodex = codexReview
+	conv := a.newConversation("Review", "Uncommitted changes", reviewTemplate().request)
+	conv.Turns[0].Review = &result
 	tt := ui.NewTester(a.view, 1280, 800)
 	tt.SetScale(2)
 	tt.SetTitleBar(ui.TitleBar{Height: titleBarHeight, Left: 68})
@@ -357,9 +343,7 @@ func TestReviewBranchChanges(t *testing.T) {
 	if target, _ := a.reviewTarget(); target.Scope != review.BranchScope || target.Base != main {
 		t.Fatalf("target %+v, want the branch's changes since %s", target, main)
 	}
-	if err := tt.Click("Review"); err != nil {
-		t.Fatal(err)
-	}
+	askCodex(t, tt, "Review")
 	settle(tt)
 	if a.review.scope != review.BranchScope || !tt.HasText("Passed") {
 		t.Fatalf("review %+v, %q", a.review, tt.Texts())
@@ -391,7 +375,38 @@ func TestReviewBranchChanges(t *testing.T) {
 	testutil.Git(t, repo, "commit", "-q", "-m", "Add a draft")
 	a.refresh()
 	settle(tt)
-	if !a.review.stale || !tt.HasText("Review Again") {
+	if !a.review.stale || tt.HasText("Passed") {
 		t.Fatalf("a commit kept the branch's review: %+v", a.review)
+	}
+}
+
+// The Review template, edited, still reviews, and asks what the user
+// added.
+func TestReviewOwnRequest(t *testing.T) {
+	repo := testutil.Repo(t)
+	testutil.FakeReviewCodex(t, testutil.PassingReview)
+	prompt := filepath.Join(t.TempDir(), "prompt")
+	t.Setenv("PEEK_TEST_REVIEW_PROMPT", prompt)
+	a, tt := testApp(t, repo, nil)
+	if err := tt.Click("Ask Codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("Shortcuts"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.ChooseMenuItem("Review"); err != nil {
+		t.Fatal(err)
+	}
+	a.ask.text += " Mind the docs."
+	if err := tt.Click("Send"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if a.review.result == nil || !tt.HasText("Passed") {
+		t.Fatalf("review %+v, texts %q", a.review, tt.Texts())
+	}
+	got, _ := os.ReadFile(prompt)
+	if !strings.Contains(string(got), "Return only the required JSON object.") || !strings.HasSuffix(strings.TrimSpace(string(got)), "Mind the docs.") {
+		t.Fatalf("prompt %q, want the review with the user's request", got)
 	}
 }

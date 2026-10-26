@@ -72,12 +72,19 @@ func TestPanelsToggle(t *testing.T) {
 	if err := tt.Click("Hide History"); err != nil {
 		t.Fatal(err)
 	}
-	if a.showHistory || tt.HasText("1 commit") {
+	// The column slides out, as Xcode's inspector does.
+	tt.Advance(100 * time.Millisecond)
+	if a.showHistory || a.historyShown <= 0 || a.historyShown >= 1 || !tt.HasText("1 commit") {
+		t.Errorf("history not sliding out after toggling it off, shown %v, texts %q", a.historyShown, tt.Texts())
+	}
+	settle(tt)
+	if tt.HasText("1 commit") {
 		t.Errorf("history still shown after toggling it off, texts %q", tt.Texts())
 	}
 	if err := tt.Click("Hide Sidebar"); err != nil {
 		t.Fatal(err)
 	}
+	settle(tt)
 	if a.showTree {
 		t.Error("file tree still shown after toggling it off")
 	}
@@ -105,7 +112,9 @@ func TestFold(t *testing.T) {
 func TestReplaceTree(t *testing.T) {
 	tree := newPathTree()
 	tree.set(fold([]string{"a/one.go", "b/two.go", "main.go"}))
-	tt := ui.NewTester(func(c *ui.Context) { tree.view(c, "Files", func(string, bool) {}) }, 400, 400)
+	tt := ui.NewTester(func(c *ui.Context) {
+		tree.view(c, "Files", func(string) ui.SourceListItem { return ui.SourceListItem{} })
+	}, 400, 400)
 	tree.state.Open.Add("a")
 	tree.show("b/two.go")
 	tt.Frame()
@@ -127,7 +136,7 @@ func TestShowChoosesAtOnce(t *testing.T) {
 	tree.set(fold([]string{"a/one.go", "b/two.go", "main.go"}))
 	tt := ui.NewTester(func(c *ui.Context) {
 		tree.applyFilter()
-		tree.view(c, "Files", func(string, bool) {})
+		tree.view(c, "Files", func(string) ui.SourceListItem { return ui.SourceListItem{} })
 	}, 400, 400)
 	tt.Frame()
 	tree.show("b/two.go")
@@ -174,7 +183,7 @@ func TestCompactFolders(t *testing.T) {
 	}
 	tree.show(deep + "/ui/Screen.kt")
 	if !tree.state.Open.Has("apps/android") || !tree.state.Open.Has(deep) || !tree.state.Open.Has(deep+"/ui") {
-		t.Errorf("show opened %v, want every folder above the file", tree.opened)
+		t.Errorf("show opened %v, want every folder above the file", slices.Collect(tree.state.Open.All()))
 	}
 }
 
@@ -324,15 +333,15 @@ func TestNativeToolbarShowsTheAgentAndHost(t *testing.T) {
 	if got := item("web").Label; got != "Open on GitLab" {
 		t.Fatalf("web label %q, want GitLab", got)
 	}
-	if got := item("explain").ToolTip; !strings.Contains(got, "with Codex") {
-		t.Fatalf("explain tooltip %q", got)
+	if got := item("agent").ToolTip; !strings.Contains(got, "Ship with Codex") {
+		t.Fatalf("agent tooltip %q", got)
 	}
 	a.toggleAgent()
 	tt.Frame()
 	if got := item("agent").Title; got != "Grok Build" {
 		t.Fatalf("agent %q, want Grok Build", got)
 	}
-	if got := item("explain").ToolTip; !strings.Contains(got, "with Grok Build") {
-		t.Fatalf("explain tooltip %q", got)
+	if got := item("agent").ToolTip; !strings.Contains(got, "Ship with Grok Build") {
+		t.Fatalf("agent tooltip %q", got)
 	}
 }

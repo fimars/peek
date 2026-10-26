@@ -1,5 +1,5 @@
 // Package grok runs the Grok Build CLI over a repository, for the commit
-// messages Ship writes and the reviews and explanations Review asks for.
+// messages Ship writes.
 package grok
 
 import (

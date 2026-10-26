@@ -4,6 +4,7 @@ package app
 
 import (
 	"fmt"
+	"image"
 	"log"
 	"os"
 	"path"
@@ -60,8 +61,22 @@ type app struct {
 	upstream                 string // the upstream's name, where the branch is behind it
 	pull                     pullState
 	review                   reviewState
-	agent                    agentKind // the AI agent Ship, Review, and Explain use
-	explain                  explainState
+	agent                    agentKind // the agent Ship uses
+	answer                   answerState
+	ask                      askState    // the popover's
+	compose                  askState    // a new conversation's field's
+	lastCodex                codexResult // which result came last
+	// conversations are those with Codex about the repository, newest
+	// first, kept in convFile; convRow is the one chosen, and navigator
+	// which the sidebar lists, the files or the conversations.
+	conversations []*conversation
+	convList      ui.OutlineState[*conversation]
+	convRow       int
+	convFile      string
+	navigator     int
+	reply         string    // the request to follow up with
+	streamed      int       // how much of the answer streaming the transcript followed
+	replyField    ui.Handle // its field
 	// reviewSource is what a review is of where the work tree or a commit
 	// shows: the uncommitted changes, else the commits not pushed yet.
 	reviewSource    review.Snapshot
@@ -83,21 +98,27 @@ type app struct {
 	// over the room the columns leave it.
 	nativeBar bool
 	// The windows of AppKit's own the sheets and the switcher show in.
-	reviewSheet, explainSheet, switcherPopover child
+	switcherPopover, askPopoverWin child
 
 	showHistory, showTree   bool
 	historyWidth, treeWidth float32
 	// collapsedHistory and collapsedTree are the columns the window's
 	// narrowing hid, which its widening shows again.
 	collapsedHistory, collapsedTree bool
-	fitWidth                        float32 // the window's width fit last
-	mode                            int
-	modeChoice                      int // the mode switch's, which setMode follows
+	// historyShown and treeShown are how far the columns show, from 0 to
+	// 1, as they slide in and out (reveal).
+	historyShown, treeShown float32
+	fitWidth                float32 // the window's width fit last
+	mode                    int
+	modeChoice              int // the mode switch's, which setMode follows
 
 	commits    []git.Commit
-	commitList ui.ListState
-	commitRow  int
-	loadedRow  int // the commit whose changes are loaded, or loading
+	commitList ui.OutlineState[string] // by hash, "" the work tree
+	// pictures are the avatars and badges of the history's rows, drawn
+	// for its list, by what they show.
+	pictures  map[string]*image.RGBA
+	commitRow int
+	loadedRow int // the commit whose changes are loaded, or loading
 	// worktreeChanges are the work tree's, read with the history, for
 	// its entry's first load.
 	worktreeChanges []git.Change
@@ -114,7 +135,10 @@ type app struct {
 	file       string // the file at the top of the diffs
 	diffs      []*fileDiff
 	diffOf     map[string]*fileDiff // the diffs by path
-	diffGen    int                  // counts the lists of diffs, to drop stale loads
+	// groupDiffs are the diffs of each group of the change tree, which its
+	// row's badges count each time the sidebar asks for it.
+	groupDiffs map[string][]*fileDiff
+	diffGen    int // counts the lists of diffs, to drop stale loads
 	diffList   ui.ListState
 	read       map[string]bool // diffs marked read or not, by commit and path
 	// scrollTarget is the file the diffs scroll to for the tree, -1 once
@@ -154,11 +178,14 @@ func newApp(repo string) *app {
 		filesFor:     -1,
 		changeTree:   newPathTree(),
 		allTree:      newPathTree(),
+		ask:          askState{template: -1},
+		compose:      askState{template: -1},
+		convRow:      -1,
 	}
 }
 
-// agentKind is the agent Ship, Review, and Explain use: the projects'
-// where there are, else this app's, as tests keep it.
+// agentKind is the agent Ship uses: the projects' where there are, else
+// this app's, as tests keep it.
 func (a *app) agentKind() agentKind {
 	if a.projects != nil {
 		return a.projects.agent
@@ -192,6 +219,7 @@ const (
 // as the user scales it, and the theme of lists without the focus.
 func (a *app) themed(c *ui.Context) {
 	t := c.Theme() // a copy for this pass
+	xcodeGrays(t, c.Preferences().HighContrast)
 	t.FontSize = fontSize * c.Preferences().TextScale
 	unhovered(t)
 	c.SetTheme(t)
@@ -226,45 +254,78 @@ func (a *app) view(c *ui.Context) {
 	// history at the end, as an inspector. The toolbar changes the state
 	// in actions, after the pass, so that all of the pass sees the same.
 	a.fit(c.Size())
+	a.treeShown = a.reveal(c, "tree", a.showTree)
+	a.historyShown = a.reveal(c, "history", a.showHistory)
 	a.nativeBar = a.nativeToolbar(c)
-	tree, history := a.showTree, a.showHistory
+	// Under AppKit's toolbar, the columns are its split view's, which the
+	// user drags and which slides them in and out: they show at its
+	// widths.
+	split := a.columnWidths()
+	if split != nil {
+		a.treeShown, a.historyShown = shown(split[0], a.treeWidth), shown(split[2], a.historyWidth)
+	}
+	tree, history := a.treeShown > 0, a.historyShown > 0
+	treeWidth, historyWidth := sliding(&a.treeWidth, a.treeShown), sliding(&a.historyWidth, a.historyShown)
+	if split != nil {
+		tw, hw := float32(split[0]), float32(split[2])
+		treeWidth, historyWidth = &tw, &hw
+	}
 	a.diffWidth, _ = c.Size()
 	if tree {
-		a.diffWidth -= a.treeWidth
+		a.diffWidth -= *treeWidth
 	}
 	if history {
-		a.diffWidth -= a.historyWidth
+		a.diffWidth -= *historyWidth
 	}
 	content := func() {
 		ui.Column(c).Fill().Background(a.theme.Background).Children(func() {
-			a.toolbar(c, !tree, !history)
-			if a.mode == modeFiles {
+			// The toolbar's room over the text in its band, as the jump
+			// bar under it, as Xcode's editor's.
+			ui.Column(c).Shrink(0).FillWidth().Background(chromeColor(a.theme)).Children(func() { a.toolbar(c, !tree, !history) })
+			switch conv := a.shownConversation(); {
+			case conv != nil:
+				a.conversationPane(c, conv)
+			case a.mode == modeFiles:
 				a.codePane(c)
-			} else {
+			default:
 				a.diffPane(c)
+			}
+		})
+	}
+	if split != nil {
+		ui.Row(c).Fill().Children(func() {
+			if tree {
+				ui.Column(c).Width(*treeWidth).Shrink(0).FillHeight().Clip().
+					Children(slide(c, a.treeWidth, a.themedPane(c, func() { a.treePane(c) })))
+			}
+			ui.Column(c).Grow(1).MinWidth(0).FillHeight().Children(a.themedPane(c, content))
+			if history {
+				ui.Column(c).Width(*historyWidth).Shrink(0).FillHeight().Clip().
+					Children(slideStart(c, a.historyWidth, a.themedPane(c, func() { a.history(c) })))
 			}
 		})
 	}
 	rest := func() {
 		if tree {
 			a.lineless(c, func() {
-				ui.Split(c, &a.treeWidth, a.themedPane(c, func() { a.treePane(c) }), a.themedPane(c, content)).Fill()
+				ui.Split(c, treeWidth, slide(c, a.treeWidth, a.themedPane(c, func() { a.treePane(c) })), a.themedPane(c, content)).Fill()
 			})
 		} else {
 			content()
 		}
 	}
-	if history {
+	switch {
+	case split != nil:
+	case history:
 		a.lineless(c, func() {
-			endSplit(c, &a.historyWidth, a.themedPane(c, func() { a.history(c) }), a.themedPane(c, rest)).Fill()
+			endSplit(c, historyWidth, a.historyWidth, a.themedPane(c, func() { a.history(c) }), a.themedPane(c, rest)).Fill()
 		})
-	} else {
+	default:
 		rest()
 	}
+	a.askPopover(c)
 	a.branchSwitcher(c)
 	a.alerts(c)
-	a.reviewDetails(c)
-	a.explanationDetails(c)
 	a.sync(c)
 	// Over the window's material the sidebar shows it, and the other
 	// columns draw their own backgrounds, as AppKit's source lists do: the
@@ -316,6 +377,73 @@ func (a *app) fit(width, _ float32) {
 	}
 }
 
+// reveal is how far the column on shows, which slides in and out as it
+// shows and hides, as Xcode's navigator and inspector do, at once where
+// the desktop asks for less motion. A project the window shows anew
+// starts with its columns as they are.
+func (a *app) reveal(c *ui.Context, column string, on bool) float32 {
+	var to float32
+	if on {
+		to = 1
+	}
+	return c.Root().AnimateWith(columnKey{a, column}, to, 250*time.Millisecond, ui.EaseInOut)
+}
+
+// columnKey tells apart the columns' animations, by project.
+type columnKey struct {
+	a      *app
+	column string
+}
+
+// sliding is the width a column shows at, of *width while it shows in
+// full, for its divider's drags to change, and a part of it while it
+// slides.
+func sliding(width *float32, shown float32) *float32 {
+	if shown >= 1 {
+		return width
+	}
+	w := *width * shown
+	return &w
+}
+
+// columnWidths returns the widths the columns of AppKit's split view
+// show at, the sidebar's, the text's and the history's: nil without it.
+func (a *app) columnWidths() []float64 {
+	if !a.nativeBar {
+		return nil
+	}
+	widths := a.win.ToolbarColumnWidths()
+	if len(widths) != 3 {
+		return nil
+	}
+	return widths
+}
+
+// shown is how far a column of the split view shows, of its width.
+func shown(at float64, width float32) float32 {
+	if width <= 0 {
+		return 0
+	}
+	return min(float32(at)/width, 1)
+}
+
+// slideStart is slide for a column at the end, its pane against the
+// divider at its start.
+func slideStart(c *ui.Context, width float32, build func()) func() {
+	return func() {
+		ui.Column(c).Absolute().Top(0).Bottom(0).Start(0).Width(width).Children(build)
+	}
+}
+
+// slide builds a column's pane at its full width, against the divider,
+// so that it slides past the window's edge as its split narrows it,
+// rather than squeezing.
+func slide(c *ui.Context, width float32, build func()) func() {
+	return func() {
+		ui.Column(c).Absolute().Top(0).Bottom(0).End(0).Width(width).Children(build)
+	}
+}
+
 // toggle shows or hides a column as the user asks, which the window's
 // resizing then leaves as it is.
 func (a *app) toggle(on, collapsed *bool) {
@@ -348,8 +476,9 @@ func (a *app) themedPane(c *ui.Context, build func()) func() {
 
 // endSplit is Split with end at the end, *size its width, as a window's
 // inspector keeps its width while the window resizes: a Split laid out
-// the other way round, its panes the window's way.
-func endSplit(c *ui.Context, size *float32, end, rest func()) ui.Element {
+// the other way round, its panes the window's way, end built full wide
+// (slide).
+func endSplit(c *ui.Context, size *float32, full float32, end, rest func()) ui.Element {
 	dir, flipped := c.Direction(), ui.RightToLeft
 	if dir == ui.RightToLeft {
 		flipped = ui.LeftToRight
@@ -360,7 +489,7 @@ func endSplit(c *ui.Context, size *float32, end, rest func()) ui.Element {
 	// The direction is the Split's before it builds its divider, whose
 	// drags follow it.
 	return ui.Row(c).Direction(flipped).Children(func() {
-		ui.Split(c, size, pane(end), pane(rest)).Fill()
+		ui.Split(c, size, slide(c, full, pane(end)), pane(rest)).Fill()
 	})
 }
 
@@ -405,14 +534,14 @@ func toolGroup(c *ui.Context, label string, build func()) ui.Element {
 	}).Shrink(0).Padding(0).Label(label)
 }
 
-// actions are the toolbar's work on the commits: explaining and
-// reviewing the changes and shipping them, over the history, which they
-// add to, or at the end of the text's part while the history hides.
+// actions are the toolbar's work on the commits: choosing the agent,
+// shipping the changes with it, and asking Codex about them, over the
+// history, which they add to, or at the end of the text's part while the
+// history hides.
 func (a *app) actions(c *ui.Context) {
 	a.agentButton(c)
-	a.explainButton(c)
-	a.reviewButton(c)
 	a.pushButton(c)
+	a.codexButton(c)
 }
 
 // repository is the toolbar's controls of the repository: the project,
@@ -581,7 +710,7 @@ func mutedDetail(c *ui.Context, detail string) func() {
 func jumpBar(c *ui.Context, title string, host git.Host, detail, body func()) {
 	t := c.Theme()
 	ui.Row(c).Height(30).Shrink(0).FillWidth().AlignItems(ui.Center).Gap(t.Space(2)).
-		Padding(0, t.Space(3)).Children(func() {
+		Padding(0, t.Space(3)).Background(chromeColor(t)).Children(func() {
 		ui.RichText(c).FontWeight(600).SingleLine().Ellipsis("…").
 			Grow(1).MinWidth(0).Tooltip(title).Children(func() {
 			linkedText(c, title, host)
@@ -630,11 +759,11 @@ func splitRefs(text string) []string {
 	return parts
 }
 
-// sideList insets a list of a side column, the history or a tree, so
-// that its rows' highlights clear the divider and the column's edges.
+// sideList gives a list of the sidebar the column's width, to its edges:
+// AppKit's source list insets its rows and their highlights itself, and
+// its headings line up with the column's title then, as a sidebar's.
 func sideList(c *ui.Context, list ui.Element) ui.Element {
-	t := c.Theme()
-	return list.Grow(1).FillWidth().Padding(t.Space(1.5), t.Space(2))
+	return list.Grow(1).FillWidth()
 }
 
 // ink is the colors of a row of a side list: the accent's text where it
@@ -679,76 +808,87 @@ func (a *app) history(c *ui.Context) {
 			loading(c)
 			return
 		}
-		a.commitList.Selected = &a.commitRow
-		a.commitList.Key = func(i int) any { return a.commits[i].Hash } // "" the work tree
-		a.commitList.Label = func(i int) string { return a.commits[i].Subject }
-		a.withFocus(c, a.commitList.FocusWithin(c), func() {
-			list := ui.List(c.Key("history"), &a.commitList, len(a.commits)).Gap(1).Label("History")
-			sideList(c, list).Rows(func(row ui.ListRow) { a.commitItem(row, row.Index) })
-		})
+		a.commitList.List.Selected = &a.commitRow
+		// An inspector's list, of rows of two lines under their avatars.
+		a.commitList.Inset, a.commitList.RowHeight = true, 46
+		hashes := make([]string, len(a.commits))
+		index := make(map[string]int, len(a.commits))
+		for i, cm := range a.commits {
+			hashes[i], index[cm.Hash] = cm.Hash, i
+		}
+		item := a.commitItem(c)
+		list := ui.SourceList(c.Key("history"), &a.commitList, hashes, func(string) []string { return nil },
+			func(hash string) ui.SourceListItem { return item(a.commits[index[hash]]) })
+		list.Grow(1).FillWidth().Label("History")
 	})
 }
 
-// commitItem is the row of the commit at index i of the history.
-func (a *app) commitItem(row ui.ListRow, i int) {
-	c := row.Context
-	t := c.Theme()
-	cm := a.commits[i]
-	in := rowInk(t, row.Selected(), row.ListFocused())
-	text, muted := in.text, in.muted
-	item := ui.Row(c).FillWidth().Gap(t.Space(2.5)).Padding(t.Space(2), t.Space(2)).AlignItems(ui.Start).Children(func() {
+// commitItem returns what describes the row of a commit of the history:
+// its subject over when and who, after its author's avatar with the
+// first co-author's over its corner, as GitHub stacks them; the work
+// tree's and a range's with their badges, over their summaries.
+func (a *app) commitItem(c *ui.Context) func(cm git.Commit) ui.SourceListItem {
+	dark := c.Theme().Dark
+	orange, purple := system(c, systemOrange), system(c, systemPurple)
+	ring := c.Theme().Background
+	services := c.Services()
+	return func(cm git.Commit) ui.SourceListItem {
+		it := ui.SourceListItem{Title: cm.Subject, Bold: true, ImageSize: 34}
 		if cm.Hash == git.Worktree || git.IsRange(cm.Hash) {
-			tint, glyph := system(c, systemOrange), worktreeIcon
+			tint, glyph, name := orange, worktreeIcon, "worktree"
 			if cm.Hash != git.Worktree {
-				tint, glyph = system(c, systemPurple), branchIcon
+				tint, glyph, name = purple, branchIcon, "range"
+				it.Tooltip = cm.Body
 			}
-			badge := ui.Box(c).Size(30, 30).Shrink(0).Radius(999).Center().
-				Background(tint.Alpha(0.16)).TextColor(tint)
-			if in.onAccent {
-				badge.Background(t.AccentText.Alpha(0.2)).TextColor(t.AccentText)
-			}
-			badge.Children(func() { ui.Icon(c, glyph).Size(15, 15) })
-			ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-				ui.Text(c, cm.Subject).FontWeight(600).TextColor(text).SingleLine()
-				ui.Text(c, cm.Summary).FontSize(smallSize).TextColor(muted).SingleLine()
+			it.Subtitle = cm.Summary
+			it.Image = a.drawn(fmt.Sprint(name, dark), 30, func(c *ui.Context) {
+				ui.Box(c).Size(30, 30).Radius(999).Center().Background(tint.Alpha(0.16)).TextColor(tint).
+					Children(func() { ui.Icon(c, glyph).Size(15, 15) })
 			})
-			return
+			return it
 		}
-		// The first co-author over the author's corner, as GitHub
-		// stacks them.
-		ui.Box(c).Size(30, 30).Shrink(0).Children(func() {
-			a.personAvatar(c, cm.Author, cm.Email, 30)
-			if len(cm.CoAuthors) > 0 {
-				co := cm.CoAuthors[0]
-				// A ring of the row's own color parts the two.
-				ring := t.Background
-				if row.Selected() {
-					ring = t.Accent
+		it.Subtitle = shortDate(cm.Time, time.Now()) + " · " + authors(cm)
+		it.Tooltip = commitMessage(cm)
+		var co *git.Person
+		key := fmt.Sprint("avatar", dark, cm.Author, cm.Email, a.avatar(cm.Email) != nil)
+		if len(cm.CoAuthors) > 0 {
+			co = &cm.CoAuthors[0]
+			key += fmt.Sprint(co.Name, co.Email, a.avatar(co.Email) != nil)
+		}
+		it.Image = a.drawn(key, 30, func(c *ui.Context) {
+			ui.Box(c).Size(30, 30).Children(func() {
+				a.personAvatar(c, cm.Author, cm.Email, 30)
+				if co != nil {
+					// A ring of the window's color parts the two.
+					ui.Box(c).Size(19, 19).Radius(9.5).Center().Background(ring).
+						Absolute().Right(-4).Bottom(-4).Children(func() {
+						a.personAvatar(c, co.Name, co.Email, 16)
+					})
 				}
-				ui.Box(c).Size(19, 19).Radius(9.5).Center().Background(ring).
-					Absolute().Right(-4).Bottom(-4).Children(func() {
-					a.personAvatar(c, co.Name, co.Email, 16)
-				})
-			}
-		})
-		// What first, across the whole line, then when and who under it.
-		// The hash is in the details.
-		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-			ui.Text(c, cm.Subject).FontWeight(600).TextColor(text).SingleLine().Ellipsis("…").FillWidth()
-			ui.Row(c).FillWidth().Gap(t.Space(1.5)).AlignItems(ui.Baseline).Children(func() {
-				ui.Text(c, shortDate(cm.Time, time.Now())).FontSize(smallSize).TextColor(muted).SingleLine().Shrink(0)
-				ui.Text(c, "·").FontSize(smallSize).TextColor(muted).Shrink(0)
-				ui.Text(c, authors(cm)).FontSize(smallSize).TextColor(muted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 			})
 		})
-	})
-	switch {
-	case git.IsRange(cm.Hash):
-		item.Tooltip(cm.Body)
-	case cm.Hash != git.Worktree:
-		item.Tooltip(commitMessage(cm))
-		a.commitMenu(c, item, i, cm)
+		it.Menu = func(m *ui.Menu) { a.commitMenu(c, services, m, cm) }
+		return it
 	}
+}
+
+// drawn draws view, size DIPs square, as a picture for a list of the
+// system's, once for each key.
+func (a *app) drawn(key string, size int, view func(c *ui.Context)) *image.RGBA {
+	if pic, ok := a.pictures[key]; ok {
+		return pic
+	}
+	if a.pictures == nil {
+		a.pictures = map[string]*image.RGBA{}
+	}
+	// Room for what spills past the square, as a co-author's avatar.
+	room := size + 4
+	pic := ui.Render(func(c *ui.Context) {
+		c.Root().Background(ui.Transparent)
+		ui.Box(c).Size(float32(room), float32(room)).Children(func() { view(c) })
+	}, room, room, 2)
+	a.pictures[key] = pic
+	return pic
 }
 
 // commitMessage is a commit's whole message, its subject and body.
@@ -758,24 +898,21 @@ func commitMessage(cm git.Commit) string {
 
 // commitMenu is the context menu of a commit's row: copying its hash or
 // message, and its page on the code host.
-func (a *app) commitMenu(c *ui.Context, item ui.Element, i int, cm git.Commit) {
-	services := c.Services()
-	item.ContextMenu(func(m *ui.Menu) {
-		if m.Item("Copy Commit Hash").Chosen() {
-			services.WriteClipboard(cm.Hash)
-			c.Toast("Commit Hash Copied")
+func (a *app) commitMenu(c *ui.Context, services ui.Services, m *ui.Menu, cm git.Commit) {
+	if m.Item("Copy Commit Hash").Chosen() {
+		services.WriteClipboard(cm.Hash)
+		c.Toast("Commit Hash Copied")
+	}
+	if m.Item("Copy Commit Message").Chosen() {
+		services.WriteClipboard(commitMessage(cm))
+		c.Toast("Commit Message Copied")
+	}
+	if !a.host.None() {
+		m.Separator()
+		if m.Item("Open on " + a.host.Name()).Chosen() {
+			services.OpenURL(a.host.CommitURL(cm.Hash))
 		}
-		if m.Item("Copy Commit Message").Chosen() {
-			services.WriteClipboard(commitMessage(cm))
-			c.Toast("Commit Message Copied")
-		}
-		if !a.host.None() {
-			m.Separator()
-			if m.Item("Open on " + a.host.Name()).Chosen() {
-				services.OpenURL(a.host.CommitURL(cm.Hash))
-			}
-		}
-	})
+	}
 }
 
 // personAvatar is the picture of someone, size DIPs across. Avatar lays
@@ -828,6 +965,19 @@ func authors(cm git.Commit) string {
 }
 
 func (a *app) treePane(c *ui.Context) {
+	toolbar := func() {
+		a.toolbarPart(c, true, false, func() {
+			a.repository(c)
+			toolGroup(c, "Sidebar Toolbar", func() {
+				a.paneButton(c, "sidebar", sidebarIcon, &a.showTree, &a.collapsedTree, "Sidebar")
+			})
+		})
+		a.navigatorBar(c)
+	}
+	if a.navigator == navConversations {
+		sideColumn(c, sidebarBackground(c), toolbar, "Conversations", mutedDetail(c, ""), func() { a.conversationsPane(c) })
+		return
+	}
 	title, key, tree, label := "Changed Files", "changes", &a.changeTree, "Changes"
 	if a.mode == modeFiles {
 		title, key, tree, label = "Files", "all", &a.allTree, "Files"
@@ -845,14 +995,7 @@ func (a *app) treePane(c *ui.Context) {
 			lineCounts(c, added, deleted, false)
 		}
 	}
-	sideColumn(c, sidebarBackground(c), func() {
-		a.toolbarPart(c, true, false, func() {
-			a.repository(c)
-			toolGroup(c, "Sidebar Toolbar", func() {
-				a.paneButton(c, "sidebar", sidebarIcon, &a.showTree, &a.collapsedTree, "Sidebar")
-			})
-		})
-	}, title, detail, func() {
+	sideColumn(c, sidebarBackground(c), toolbar, title, detail, func() {
 		switch {
 		case tree.dirs == nil:
 			loading(c)
@@ -873,14 +1016,19 @@ func (a *app) filterBar(c *ui.Context, key string, f *filterState) {
 		ui.Divider(c)
 	}
 	ui.Row(c).Shrink(0).FillWidth().Padding(t.Space(2)).Children(func() {
-		field := searchField(c, "filter:"+key, &f.filter, "Filter", "Filter Files", &f.field, &f.focus,
-			func() { f.toList = true }).FillWidth()
-		if a.nativeBar {
-			// A capsule over the sidebar's color, as Xcode's filter.
-			field.Radius(t.Space(4)).Background(t.Background.Alpha(0.7)).Border(1, t.Border.Alpha(0.6))
-			if f.field.FocusWithin(c) {
-				field.Border(1, t.Accent)
+		// The system's search field, as Xcode's navigator filters with.
+		f.field.Placeholder, f.field.Label = "Filter", "Filter Files"
+		f.field.OnKey = func(k ui.Key) bool {
+			if k != ui.KeyDown {
+				return false
 			}
+			f.toList = true
+			return true
+		}
+		ui.NativeSearchField(c.Key("filter:"+key), &f.field, &f.filter).FillWidth()
+		if f.focus {
+			f.focus = false
+			f.field.Focus(c)
 		}
 	})
 }
@@ -899,74 +1047,69 @@ func (a *app) filterFiles() {
 }
 
 func (a *app) treeView(c *ui.Context, tree *pathTree, label string) {
-	focused := tree.state.List.FocusWithin(c)
-	a.withFocus(c, focused, func() {
-		sideList(c, tree.view(c, label, func(p string, selected bool) {
-			a.treeItem(c, tree, p, selected, focused)
-		}))
-	})
+	sideList(c, tree.view(c, label, a.treeItem(c, tree)))
 }
 
-func (a *app) treeItem(c *ui.Context, tree *pathTree, p string, selected, focused bool) {
-	t := c.Theme()
-	in := rowInk(t, selected, focused)
-	text, muted := in.text, in.muted
-	isFile := !tree.isDir(p)
-	ch, changed := a.changes[p]
-	if isFile && tree == &a.changeTree && a.readFile(p) && !selected {
-		text = muted // read, as the diffs fold it away
+// treeItem returns what describes the rows of the tree, as the sidebar's
+// list asks for them, between frames too: it answers from what the frame
+// knew, the theme's colors and the services.
+func (a *app) treeItem(c *ui.Context, tree *pathTree) func(p string) ui.SourceListItem {
+	dark := c.Theme().Dark
+	colors := map[string]ui.Color{}
+	for _, s := range []string{"A", "D", "M", "R", "C"} {
+		colors[s] = statusColor(c, s)
 	}
-	row := ui.Row(c).FillWidth().Gap(t.Space(1.5)).PaddingY(1).AlignItems(ui.Center)
-	if !isFile {
-		// A click on a folder opens or closes it as its arrow does, which
-		// sync makes choose it too, as Finder's and Xcode's rows do. It
-		// acts once the outline is built, as it changes the outline's rows.
-		row.KeepFocus().OnClick(func() { tree.flip(p) })
+	status := func(s string) ui.Color {
+		if col, ok := colors[s]; ok {
+			return col
+		}
+		return colors["M"]
 	}
 	services := c.Services()
-	row.ContextMenu(func(m *ui.Menu) {
-		if tree == &a.changeTree {
-			a.readMenu(m, p)
-			if isGroup(p) {
-				return
+	return func(p string) ui.SourceListItem {
+		isFile := !tree.isDir(p)
+		it := ui.SourceListItem{Title: tree.labels[p], Tooltip: itemPath(p)}
+		it.Menu = func(m *ui.Menu) {
+			if tree == &a.changeTree {
+				a.readMenu(m, p)
+				if isGroup(p) {
+					return
+				}
+				m.Separator()
 			}
-			m.Separator()
+			a.fileMenu(services, m, itemPath(p), !isFile)
 		}
-		a.fileMenu(services, m, itemPath(p), !isFile)
-	})
-	if isGroup(p) {
-		row.Children(func() {
-			ui.Text(c, tree.labels[p]).FontSize(smallSize).FontWeight(600).TextColor(muted).SingleLine().Grow(1)
+		if isGroup(p) {
 			// The lines its files add and delete, and how many of them are
 			// read, as their diffs fold.
 			diffs := a.diffsUnder(p)
 			added, deleted := sumLines(diffs)
-			lineCounts(c, added, deleted, in.onAccent)
-			ui.Textf(c, "%d/%d", countRead(diffs), len(diffs)).FontSize(smallSize).TextColor(muted).Shrink(0).Padding(0, t.Space(1))
-		})
-		return
+			it.Group, it.Tooltip = true, ""
+			it.Badges = []ui.SourceListBadge{
+				{Text: fmt.Sprintf("+%d", added), Color: status("A"), Digits: true},
+				{Text: fmt.Sprintf("−%d", deleted), Color: status("D"), Digits: true},
+				{Text: fmt.Sprintf("%d/%d", countRead(diffs), len(diffs)), Digits: true},
+			}
+			return it
+		}
+		if !isFile {
+			// A click on a folder chooses it, and its arrow alone opens and
+			// closes it, as AppKit's outline views keep the two apart.
+			if icon := fileicons.FolderPicture(p, tree.state.Open.Has(p), 16, dark); icon != nil {
+				it.Image = icon
+			} else {
+				it.Symbol = "folder" // in the accent, as Finder's sidebar
+			}
+			return it
+		}
+		it.Image, it.Template = fileicons.Picture(p, 16, dark)
+		// Read, as the diffs fold it away.
+		it.Dimmed = tree == &a.changeTree && a.readFile(p)
+		if ch, changed := a.changes[p]; changed {
+			it.Badges = []ui.SourceListBadge{{Text: ch.Status, Color: status(ch.Status), Bold: true}}
+		}
+		return it
 	}
-	row.Children(func() {
-		if isFile {
-			var tint ui.Color
-			if in.onAccent {
-				tint = t.AccentText
-			}
-			fileicons.View(c, p, 16, muted, tint)
-		} else if icon := fileicons.Folder(p, tree.state.Open.Has(p), t.Dark); icon != nil {
-			ui.Image(c, icon).Size(16, 16).Shrink(0)
-		} else {
-			color := a.theme.Accent // folders in the accent, as Finder's sidebar
-			if in.onAccent {
-				color = muted
-			}
-			ui.Icon(c, folderIcon).Size(15, 15).Shrink(0).TextColor(color)
-		}
-		ui.Text(c, tree.labels[p]).TextColor(text).SingleLine().Ellipsis("…").Grow(1).MinWidth(0).Tooltip(itemPath(p))
-		if isFile && changed {
-			statusMark(c, ch.Status, in.onAccent)
-		}
-	})
 }
 
 // fileMenu is the part of a file's or a folder's context menu about where
@@ -1057,18 +1200,10 @@ func (a *app) sync(c *ui.Context) {
 	if a.changeTree.sync() || a.allTree.sync() {
 		c.Services().Invalidate()
 	}
-	// A folder opened or closed by a click, on its arrow or its row,
-	// is chosen too, and the tree takes the keys.
-	for _, tree := range []*pathTree{&a.changeTree, &a.allTree} {
-		if dir := tree.arrowed(); dir != "" {
-			if i := tree.rowOf(dir); i >= 0 {
-				tree.row = i
-			}
-			tree.state.List.Handle.Focus(c)
-			c.Services().Invalidate()
-		}
-	}
 	if a.commitRow >= 0 && a.commitRow < len(a.commits) && a.commitRow != a.loadedRow {
+		if a.loadedRow >= 0 {
+			a.navigator = navFiles // the entry chosen shows its changes
+		}
 		a.loadedRow = a.commitRow
 		a.loadCommit(a.commits[a.commitRow].Hash)
 	}

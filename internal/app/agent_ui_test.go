@@ -35,7 +35,7 @@ func TestParseAgent(t *testing.T) {
 func TestAgentMenu(t *testing.T) {
 	a, tt := testApp(t, testutil.Repo(t), nil)
 	settle(tt)
-	if err := tt.Click("Ship, Review, and Explain with Codex"); err != nil {
+	if err := tt.Click("Ship with Codex"); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := tt.Menu(), []string{"Codex", "Grok Build"}; !slices.Equal(got, want) {
@@ -45,28 +45,16 @@ func TestAgentMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if a.agentKind() != agentGrok || !tt.HasText("Ship, Review, and Explain with Grok Build") {
+	if a.agentKind() != agentGrok || !tt.HasText("Ship with Grok Build") {
 		t.Fatalf("agent %q, texts %q", a.agentKind(), tt.Texts())
 	}
-	for _, busy := range []struct {
-		name string
-		set  func()
-	}{
-		{"shipping", func() { a.push = pushState{running: true} }},
-		{"reviewing", func() { a.push = pushState{}; a.review = reviewState{running: true} }},
-		{"explaining", func() {
-			a.push, a.review = pushState{}, reviewState{}
-			a.explain = explainState{codexTask: codexTask{running: true}}
-		}},
-	} {
-		busy.set()
-		tt.Frame()
-		if err := tt.Click("Ship, Review, and Explain with Grok Build"); err != nil {
-			t.Fatal(err)
-		}
-		if got := tt.Menu(); len(got) != 0 {
-			t.Fatalf("menu %q opened while %s", got, busy.name)
-		}
+	a.push = pushState{running: true}
+	tt.Frame()
+	if err := tt.Click("Ship with Grok Build"); err != nil {
+		t.Fatal(err)
+	}
+	if got := tt.Menu(); len(got) != 0 {
+		t.Fatalf("menu %q opened while shipping", got)
 	}
 }
 
@@ -95,14 +83,14 @@ func TestAgentChoicePersists(t *testing.T) {
 	}
 }
 
-func TestAgentFlows(t *testing.T) {
+func TestAgentShipFlow(t *testing.T) {
 	repo, remote := testutil.RemoteRepo(t)
-	testutil.FakeGrok(t, testutil.PassingReview)
+	testutil.FakeGrok(t, `{"changes":["Update the files"],"subject":"Update the files"}`)
 	prompt := filepath.Join(t.TempDir(), "prompt")
 	t.Setenv("PEEK_TEST_GROK_PROMPT", prompt)
 	a, tt := testApp(t, repo, nil)
 	settle(tt)
-	if err := tt.Click("Ship, Review, and Explain with Codex"); err != nil {
+	if err := tt.Click("Ship with Codex"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tt.ChooseMenuItem("Grok Build"); err != nil {
@@ -111,21 +99,6 @@ func TestAgentFlows(t *testing.T) {
 	tt.Frame()
 	if a.agentKind() != agentGrok {
 		t.Fatalf("agent %q, want Grok Build", a.agentKind())
-	}
-	if err := tt.Click("Review"); err != nil {
-		t.Fatal(err)
-	}
-	settle(tt)
-	if a.review.running || !tt.HasText("Passed") {
-		t.Fatalf("review %+v, texts %q", a.review, tt.Texts())
-	}
-	got, err := os.ReadFile(prompt)
-	if err != nil || !strings.Contains(string(got), "Scope: Uncommitted changes.") {
-		t.Fatalf("review prompt %q, %v", got, err)
-	}
-	response := os.Getenv("PEEK_TEST_GROK_RESPONSE")
-	if err := os.WriteFile(response, []byte(`{"changes":["Update the files"],"subject":"Update the files"}`), 0o600); err != nil {
-		t.Fatal(err)
 	}
 	if err := tt.Click("Ship"); err != nil {
 		t.Fatal(err)
@@ -136,5 +109,8 @@ func TestAgentFlows(t *testing.T) {
 	}
 	if subject := testutil.Git(t, remote, "log", "-1", "--format=%s"); subject != "Update the files" {
 		t.Fatalf("remote subject %q", subject)
+	}
+	if got, err := os.ReadFile(prompt); err != nil || !strings.Contains(string(got), "Staged tree:") {
+		t.Fatalf("commit prompt %q, %v", got, err)
 	}
 }

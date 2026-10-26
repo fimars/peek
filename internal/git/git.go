@@ -5,13 +5,16 @@ package git
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -204,20 +207,21 @@ func LoadChanges(repo, hash string) ([]Change, error) {
 }
 
 // countedChanges runs the git command, as show or diff, for the files it
-// lists and again for their line counts.
+// lists and again, at once, for their line counts.
 func countedChanges(repo string, cmd ...string) ([]Change, error) {
 	with := func(flag string) (string, error) {
 		return git(repo, append([]string{cmd[0], flag}, cmd[1:]...)...)
 	}
+	var stats string
+	var statsErr error
+	var wg sync.WaitGroup
+	wg.Go(func() { stats, statsErr = with("--numstat") })
 	out, err := with("--name-status")
-	if err != nil {
+	wg.Wait()
+	if err := cmp.Or(err, statsErr); err != nil {
 		return nil, err
 	}
 	changes := parseNameStatus(out)
-	stats, err := with("--numstat")
-	if err != nil {
-		return nil, err
-	}
 	addCounts(changes, parseNumstat(stats))
 	return changes, nil
 }
@@ -225,14 +229,15 @@ func countedChanges(repo string, cmd ...string) ([]Change, error) {
 // LoadWorktreeChanges returns the files that differ from HEAD, those git
 // does not track included.
 func LoadWorktreeChanges(repo string) ([]Change, error) {
-	changes, err := countedChanges(repo, "diff", "HEAD", "-z", "-M")
-	if err != nil {
-		return nil, err
-	}
 	// All of git's lists here end their paths with NULs, which leave
 	// them as they are rather than quoted, for the counts to match them.
-	untracked, err := git(repo, "ls-files", "-z", "--others", "--exclude-standard")
-	if err != nil {
+	var untracked string
+	var untrackedErr error
+	var wg sync.WaitGroup
+	wg.Go(func() { untracked, untrackedErr = git(repo, "ls-files", "-z", "--others", "--exclude-standard") })
+	changes, err := countedChanges(repo, "diff", "HEAD", "-z", "-M")
+	wg.Wait()
+	if err := cmp.Or(err, untrackedErr); err != nil {
 		return nil, err
 	}
 	paths := nulSeparated(untracked)
@@ -259,10 +264,35 @@ func CountChanges(repo string) (int, error) {
 // big files' threshold all as they are: in an index of their own, made
 // for this and thrown away, they are only to be added, which leaves the
 // repository's index and its objects as they are, and git diffs them.
+// The files go in batches, at once, as git matches each file it adds
+// against every path it is given, which slows with thousands of them.
 func untrackedCounts(repo string, paths []string) (map[string][2]int, error) {
-	if len(paths) == 0 {
-		return nil, nil
+	const batch = 1000
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		firstErr error
+	)
+	counts := map[string][2]int{}
+	for chunk := range slices.Chunk(paths, batch) {
+		wg.Go(func() {
+			n, err := untrackedBatch(repo, chunk)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				firstErr = cmp.Or(firstErr, err)
+				return
+			}
+			maps.Copy(counts, n)
+		})
 	}
+	wg.Wait()
+	return counts, firstErr
+}
+
+// untrackedBatch counts the lines of a batch of untracked files, as
+// untrackedCounts does.
+func untrackedBatch(repo string, paths []string) (map[string][2]int, error) {
 	dir, err := os.MkdirTemp("", "peek-index")
 	if err != nil {
 		return nil, err
