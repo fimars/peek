@@ -431,14 +431,16 @@ func reviewView(c *ui.Context, r *review.Result) {
 // composer is the field under a conversation, as Xcode's: a rounded box
 // floating over the bottom of the transcript, the request over a row of
 // the templates, where the conversation is new, what it is of, and the
-// round button sending it, or stopping Codex where it works. Return
+// round button sending it, or stopping the agent where it works. Return
 // sends and Shift-Return breaks the line.
 func (a *app) composer(c *ui.Context, conv *conversation) {
 	t := c.Theme()
 	draft := len(conv.Turns) == 0
-	placeholder, scope := "Reply to Codex", conv.Scope
+	// The reply goes to the conversation's agent, a new conversation to
+	// the one chosen.
+	placeholder, scope := "Reply to "+conv.agent().name, conv.Scope
 	if draft {
-		placeholder = "New conversation with Codex"
+		placeholder = "New conversation with " + agentDefOf(a.agentKind()).name
 		scope = scopeDetail(&a.compose, a)
 	}
 	ui.Row(c).Shrink(0).FillWidth().Justify(ui.Center).Padding(0, t.Space(6), t.Space(4), t.Space(6)).Children(func() {
@@ -479,8 +481,8 @@ func (a *app) composer(c *ui.Context, conv *conversation) {
 	})
 }
 
-// stopButton is the round button stopping Codex, in place of Send while
-// it works.
+// stopButton is the round button stopping the agent, in place of Send
+// while it works.
 func stopButton(c *ui.Context, stop func()) {
 	t := c.Theme()
 	b := ui.ButtonBase(c.Key("reply-stop")).Shrink(0).Size(28, 28).Radius(14).Label("Stop").Tooltip("Stop").

@@ -81,15 +81,14 @@ func (a *app) toolbarSpec(c *ui.Context) *mygo.Toolbar {
 		mygo.ToolbarItem{ID: "history-separator", Kind: mygo.ToolbarSeparator, Divider: 1},
 		mygo.ToolbarItem{ID: "history-start", Kind: mygo.ToolbarFlexibleSpace},
 		// AppKit's toolbar takes no image of the app's own, so the agent
-		// shows as the system's symbol alone, without its name: which agent
-		// it is tells the tooltip, and the marks the settings and the view's
-		// chooser menu draw.
-		mygo.ToolbarItem{ID: "agent", Symbol: "sparkles", Label: agent.name,
+		// shows as its name alone, without the system's symbol: the marks
+		// the settings draw beside their CLIs.
+		mygo.ToolbarItem{ID: "agent", Title: agent.name, Label: "Agent",
 			ToolTip:  "Ship with " + agent.name + "; click for " + agentDefOf(next).name,
 			Disabled: a.push.running, Click: a.toggleAgent},
 	)
 	items = append(items, toolItems("push", a.pushTool(c))...)
-	items = append(items, codexItems(a.codexTool(c))...)
+	items = append(items, codexItems("Ask "+agent.name, a.codexTool(c))...)
 	items = append(items, mygo.ToolbarItem{ID: "history", Symbol: "sidebar.right", Label: showOrHide(a.showHistory, "History"),
 		ToolTip: showOrHide(a.showHistory, "History"), Click: func() { a.toggle(&a.showHistory, &a.collapsedHistory) }})
 	return &mygo.Toolbar{
@@ -135,13 +134,13 @@ func toolItems(key string, b toolButton) []mygo.ToolbarItem {
 	}
 }
 
-// codexItems are the items of Codex's button: the button, a bubble and
-// the verdict of the review where it came last, or the request under way,
-// which stops it, as toolItems.
-func codexItems(b toolButton) []mygo.ToolbarItem {
+// codexItems are the items of the agent's Ask button, named label: the
+// button, a bubble and the verdict of the review where it came last, or
+// the request under way, which stops it, as toolItems.
+func codexItems(label string, b toolButton) []mygo.ToolbarItem {
 	items := toolItems("codex", b)
 	if !b.busy {
-		items[0].Symbol, items[0].Label = "plus.bubble", "Ask Codex"
+		items[0].Symbol, items[0].Label = "plus.bubble", label
 	}
 	return items
 }

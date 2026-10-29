@@ -704,7 +704,11 @@ func (p *projects) syncMenu() {
 	m.review.show(review, a.review.running || (target.ID != "" || targetErr != "") && !busy && !a.answer.running, false)
 	explain := "Explain Changes"
 	if a.answer.running {
-		explain = "Stop Codex"
+		name := "Codex"
+		if a.answer.conv != nil {
+			name = a.answer.conv.agent().name
+		}
+		explain = "Stop " + name
 	}
 	_, answerable, _ := a.answerable()
 	m.explain.show(explain, a.answer.running || answerable != "" && !busy && !a.review.running, false)

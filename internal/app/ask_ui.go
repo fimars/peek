@@ -236,11 +236,12 @@ func (a *app) codexButton(c *ui.Context) {
 		drawTool(c, "codex", b)
 		return
 	}
+	ask := "Ask " + agentDefOf(a.agentKind()).name
 	label := b.label
 	if label == "" {
-		label = "Ask " + agentDefOf(a.agentKind()).name
+		label = ask
 	}
-	ui.Button(c.Key("codex"), label).Shrink(0).Label("Ask " + agentDefOf(a.agentKind()).name).Tooltip(b.tooltip).Bind(&a.ask.button).OnClick(b.click)
+	ui.Button(c.Key("codex"), label).Shrink(0).Label(ask).Tooltip(b.tooltip).Bind(&a.ask.button).OnClick(b.click)
 }
 
 // askWidth is the width of the popover's content.
