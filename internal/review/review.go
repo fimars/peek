@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"peek/internal/git"
 	"strings"
+	"sync"
 )
 
 // Git metadata is bounded; file contents are hashed as streams, never sent
@@ -22,16 +23,32 @@ type Snapshot struct {
 }
 
 func ReadSnapshot(repo string) (Snapshot, error) {
+	return ReadSnapshotWith(repo, func() bool { return git.HasUnpushedCommits(repo) })
+}
+
+// ReadSnapshotWith is ReadSnapshot, asking unpushed whether the branch has
+// commits it has not pushed, as one read of it for others too answers.
+func ReadSnapshotWith(repo string, unpushed func() bool) (Snapshot, error) {
 	g := func(args ...string) (string, error) { return git.Bounded(repo, maxMetadata, args...) }
-	status, err := g("status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none")
+	// Read at once: one after another, the processes added up.
+	var (
+		wg           sync.WaitGroup
+		status, head string
+		branch       string
+		err          error
+	)
+	wg.Go(func() {
+		status, err = g("status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none")
+	})
+	wg.Go(func() { head, _ = g("rev-parse", "--verify", "HEAD") })
+	wg.Go(func() { branch, _ = g("symbolic-ref", "--quiet", "HEAD") })
+	wg.Wait()
 	if err != nil {
 		return Snapshot{}, err
 	}
 	if err := rejectDirtySubmodules(status); err != nil {
 		return Snapshot{}, err
 	}
-	head, _ := g("rev-parse", "--verify", "HEAD")
-	branch, _ := g("symbolic-ref", "--quiet", "HEAD")
 	snapshot := Snapshot{Scope: "Uncommitted changes", Head: strings.TrimSpace(head)}
 	fingerprint := sha256.New()
 	fmt.Fprintf(fingerprint, "%s\x00%s\x00%s\x00", head, branch, status)
@@ -40,7 +57,7 @@ func ReadSnapshot(repo string) (Snapshot, error) {
 			return Snapshot{}, err
 		}
 	} else {
-		if snapshot.Head == "" || !git.HasUnpushedCommits(repo) {
+		if snapshot.Head == "" || !unpushed() {
 			return Snapshot{}, nil
 		}
 		trimGit := func(args ...string) (string, error) {
@@ -127,9 +144,21 @@ type Result struct {
 	Verdict string `json:"-"`
 }
 
-// blockingPriority is the lowest priority a finding fails the review at:
-// those of P3, minor, show with a passed one.
-const blockingPriority = 2
+// DefaultBlocking is the lowest priority a finding fails the review at
+// unless the user chooses another (Judge): those of P3, minor, show with
+// a passed one.
+const DefaultBlocking = 2
+
+// Judge gives the review its verdict: failed where a finding is of P0 to
+// P<blocking>, else passed.
+func (r *Result) Judge(blocking int) {
+	r.Verdict = "passed"
+	for _, f := range r.Findings {
+		if f.Priority <= blocking {
+			r.Verdict = "failed"
+		}
+	}
+}
 
 func (r Result) Text() string {
 	var text strings.Builder
@@ -140,8 +169,8 @@ func (r Result) Text() string {
 	return text.String()
 }
 
-// validate checks the review the agent returned and judges its verdict:
-// failed where a finding is of P0 to P2, else passed.
+// validate checks the review the agent returned and judges its verdict at
+// DefaultBlocking.
 func (r *Result) validate() error {
 	if strings.TrimSpace(r.Summary) == "" || r.Findings == nil {
 		return fmt.Errorf("the agent returned an incomplete review")
@@ -153,15 +182,12 @@ func (r *Result) validate() error {
 	default:
 		return fmt.Errorf("the agent returned an invalid review status")
 	}
-	r.Verdict = "passed"
 	for _, f := range r.Findings {
 		if f.Priority < 0 || f.Priority > 3 || f.Line < 1 || strings.TrimSpace(f.Title) == "" || strings.TrimSpace(f.Body) == "" || strings.TrimSpace(f.Path) == "" {
 			return fmt.Errorf("the agent returned an incomplete review finding")
 		}
-		if f.Priority <= blockingPriority {
-			r.Verdict = "failed"
-		}
 	}
+	r.Judge(DefaultBlocking)
 	return nil
 }
 

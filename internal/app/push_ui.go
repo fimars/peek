@@ -60,7 +60,7 @@ func (a *app) startPush() {
 	def := agentDefOf(a.agentKind())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	a.push = pushState{running: true, status: "Preparing to ship…", cancel: cancel}
-	repo, win, inline := a.repo, a.win, a.inline
+	repo, win, inline, model := a.repo, a.win, a.inline, a.prefs().CommitModel
 	progress := func(status string) {
 		if !inline {
 			win.Update(func() { a.push.status = status })
@@ -68,7 +68,10 @@ func (a *app) startPush() {
 	}
 	a.background(func() func() {
 		defer cancel()
-		status, err := git.Push(ctx, repo, def.commit, progress)
+		message := func(ctx context.Context, repo string, s git.Snapshot) (string, error) {
+			return def.commit(ctx, repo, s, model)
+		}
+		status, err := git.Push(ctx, repo, message, progress)
 		stopped := ctx.Err() == context.Canceled // before the deferred cancel
 		return func() {
 			a.push.running, a.push.cancel = false, nil

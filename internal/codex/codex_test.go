@@ -16,7 +16,7 @@ func TestCommitMessageReturnsCodexMessage(t *testing.T) {
 	repo, _ := testutil.RemoteRepo(t)
 	testutil.Git(t, repo, "add", "--all")
 	snapshot := git.Snapshot{Head: testutil.Git(t, repo, "rev-parse", "HEAD"), Tree: testutil.Git(t, repo, "write-tree")}
-	message, err := CommitMessage(context.Background(), repo, snapshot)
+	message, err := CommitMessage(context.Background(), repo, snapshot, "")
 	if err != nil || message != "Update the files" {
 		t.Fatalf("message %q, %v", message, err)
 	}
@@ -31,7 +31,7 @@ func TestCodexSmoke(t *testing.T) {
 	repo, _ := testutil.RemoteRepo(t)
 	testutil.Git(t, repo, "add", "--all")
 	snapshot := git.Snapshot{Head: testutil.Git(t, repo, "rev-parse", "HEAD"), Tree: testutil.Git(t, repo, "write-tree")}
-	message, err := CommitMessage(context.Background(), repo, snapshot)
+	message, err := CommitMessage(context.Background(), repo, snapshot, "")
 	if err != nil {
 		t.Fatal(err)
 	}

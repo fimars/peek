@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"peek/internal/git"
 	"peek/internal/review"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui/editor"
 )
 
 // history is what the history column lists, read together.
@@ -47,17 +50,28 @@ func readHistory(repo string) history {
 		unpushed    bool
 		behind      int
 		upstream    string
+		published   git.Published
 	)
+	// The review's snapshot asks too, not to wait on a read of its own.
+	hasUnpushed := sync.OnceValue(func() bool { return git.HasUnpushedCommits(repo) })
 	wg.Go(func() { commits, err = git.LoadCommits(repo, 500) })
+	wg.Go(func() { published = git.ReadPublished(repo, 500) })
 	wg.Go(func() { changes, _ = git.LoadWorktreeChanges(repo) })
-	wg.Go(func() { snapshot, snapshotErr = review.ReadSnapshot(repo) })
+	wg.Go(func() { snapshot, snapshotErr = review.ReadSnapshotWith(repo, hasUnpushed) })
 	wg.Go(func() { r, hasBranch = git.BranchBase(repo) })
 	wg.Go(func() { branch = git.CurrentBranch(repo) })
 	wg.Go(func() { host = git.CodeHost(repo) })
 	wg.Go(func() { branchURL = git.CurrentBranchURL(repo) })
-	wg.Go(func() { unpushed = git.HasUnpushedCommits(repo) })
+	wg.Go(func() { unpushed = hasUnpushed() })
 	wg.Go(func() { behind, upstream = git.BehindUpstream(repo) })
 	wg.Wait()
+	for i := range commits {
+		cm := &commits[i]
+		cm.Unpushed = published.Unpushed[cm.Hash]
+		if cm.Hash == published.Hash {
+			cm.Remote = published.Ref
+		}
+	}
 	// The work tree's entry always shows, for its files to read as they
 	// are on disk, with changes or none.
 	summary := "No changes"
@@ -87,6 +101,13 @@ func readHistory(repo string) history {
 // refresh reads the history and the work tree again, as the watch asks
 // once files change, keeping what shows where it still is.
 func (a *app) refresh() {
+	a.restartDefinitions()
+	a.reread()
+}
+
+// reread is refresh for changes only git's own files have, as a fetch's
+// or a commit's: the language servers read nothing of them.
+func (a *app) reread() {
 	if a.refreshing {
 		a.refreshAgain = true
 		return
@@ -98,7 +119,7 @@ func (a *app) refresh() {
 			a.refreshing = false
 			if a.refreshAgain {
 				a.refreshAgain = false
-				defer a.refresh()
+				defer a.reread()
 			}
 			if h.err == nil {
 				a.applyHistory(h)
@@ -269,41 +290,57 @@ func (a *app) updateChanges(changes []git.Change) {
 // reloadFiles lists the work tree's files again for the files mode,
 // keeping the folders open and the file shown, its text where it is.
 func (a *app) reloadFiles() {
-	open, md := a.openFile, a.preview
+	open, md, code := a.openFile, a.preview, a.code
+	gen := a.textGen
+	nest := a.prefs().NestFiles
 	a.background(func() func() {
 		files, err := git.ListFiles(a.repo, git.Worktree)
-		tree := fold(files)
+		tree := foldFiles(files, nest)
 		var text string
 		var textErr error
 		if open != "" {
-			text, textErr = git.FileText(a.repo, git.Worktree, open)
+			text, textErr = sourceText(a.repo, git.Worktree, open, maxTextSize)
 		}
 		picture, note := fileView(open, text, textErr)
+		// The text shown is compared here, and a new one's buffer made, a
+		// long file's being long to read back and to make.
+		same := code != nil && code.Buffer.String() == text
+		var buf *editor.Buffer
+		if note == "" && picture == nil && code == nil {
+			buf = codeBuffer(open, text)
+		}
 		// The preview shows anew where the text or its pictures changed.
 		stale := md != nil && md.stale(text)
 		return func() {
-			if cm, ok := a.current(); err != nil || !ok || cm.Hash != git.Worktree || a.filesFor != a.loadedRow {
+			if cm, ok := a.current(); a.closed || err != nil || !ok || cm.Hash != git.Worktree || a.filesFor != a.loadedRow {
 				return
 			}
 			a.allTree.replace(tree)
-			if open == "" || a.openFile != open {
+			if open == "" || a.openFile != open || gen != a.textGen {
 				return
 			}
-			if !a.allTree.has(open) {
+			if !a.allTree.has(open) && !filepath.IsAbs(open) {
 				a.openFile, a.code, a.picture, a.codeNote, a.preview = "", nil, nil, "", nil // deleted
 				return
 			}
-			a.allTree.show(open)
+			a.showFileInTree(open)
 			switch {
 			case note != "" || picture != nil:
 				a.code, a.picture, a.codeNote, a.preview = nil, picture, note, nil
 			case a.code != nil:
-				resetText(a.code.Buffer, text)
+				if a.code != code || !same {
+					resetText(a.code.Buffer, text)
+				}
+				a.codePath, a.codeHash = open, git.Worktree
 				if stale && a.preview == md {
 					a.preview = a.newPreview(git.Worktree, open, text)
 				}
 			default:
-				a.code = newCode(open, text)
+				if buf == nil {
+					buf = codeBuffer(open, text)
+				}
+				a.code = codeOf(buf, a.prefs())
+				a.codePath, a.codeHash = open, git.Worktree
 				a.picture, a.codeNote, a.preview = nil, "", nil
 				if isMarkdown(open) {
 					a.preview = a.newPreview(git.Worktree, open, text)
@@ -319,14 +356,13 @@ func (a *app) watch() {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.unwatch = cancel
 	win := a.win
-	// The remote, at once and every while, for its new commits.
+	// The remote, at once and every while, for its new commits: each tick
+	// asks whether the interval the user chose has passed.
 	go func() {
-		tick := time.NewTicker(fetchEvery)
+		tick := time.NewTicker(fetchTick)
 		defer tick.Stop()
 		for {
-			if networkAllows() {
-				win.Update(a.fetchRemote)
-			}
+			win.Update(a.fetchIfDue)
 			select {
 			case <-ctx.Done():
 				return
@@ -347,12 +383,44 @@ func (a *app) watch() {
 		}
 		defer w.Close()
 		for {
-			if _, err := w.Next(ctx); err != nil {
+			events, err := w.Next(ctx)
+			if err != nil {
 				return
 			}
-			win.Update(a.refresh)
+			if ignoredOnly(a.repo, events) {
+				continue
+			}
+			if gitOnly(events) {
+				win.Update(a.reread)
+			} else {
+				win.Update(a.refresh)
+			}
 		}
 	}()
+}
+
+// ignoredOnly reports whether the changes are all in folders git ignores,
+// as a build's output, which change nothing the window shows: a build
+// writing to them would else read the history again every while.
+func ignoredOnly(repo string, events []mygo.FileEvent) bool {
+	var dirs []string
+	for _, ev := range events {
+		if ev.Op != mygo.FileHint || ev.Path == "." || ev.Path == ".git" || strings.HasPrefix(ev.Path, ".git/") {
+			return false
+		}
+		dirs = append(dirs, ev.Path)
+	}
+	return git.AllIgnored(repo, dirs)
+}
+
+// gitOnly reports whether the changes are all in .git.
+func gitOnly(events []mygo.FileEvent) bool {
+	for _, ev := range events {
+		if ev.Path != ".git" && !strings.HasPrefix(ev.Path, ".git/") {
+			return false
+		}
+	}
+	return len(events) > 0
 }
 
 // churn is what changes often without changing what the window shows:

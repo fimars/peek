@@ -202,7 +202,7 @@ func TestGrokCommitMessageSmoke(t *testing.T) {
 	repo, _ := testutil.RemoteRepo(t)
 	testutil.Git(t, repo, "add", "--all")
 	snapshot := git.Snapshot{Head: testutil.Git(t, repo, "rev-parse", "HEAD"), Tree: testutil.Git(t, repo, "write-tree")}
-	message, err := CommitMessage(context.Background(), repo, snapshot)
+	message, err := CommitMessage(context.Background(), repo, snapshot, "")
 	if err != nil {
 		t.Fatal(err)
 	}

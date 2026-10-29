@@ -16,8 +16,11 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 )
 
-// The fork's native-source-list branch, on its native-sidebar-material
-// branch, on MyGo's main, leaves Tooltip's tips to AppKit, which shows
+// The fork's native-controls branch, on its native-source-list branch,
+// on its native-sidebar-material branch, on MyGo's main, shows AppKit's
+// check boxes, pop-up buttons, text fields (NativeCheckbox,
+// NativePopUpButton, NativeTextField) and preference toolbars, as a
+// settings window's; lets diffs ignore whitespace; leaves Tooltip's tips to AppKit, which shows
 // them as its own; scrolls as AppKit's scroll views do: overlay scroll
 // bars, and content a touchpad pulls past its ends springing back; gives
 // macOS's Services and Writing Tools the selected text, in AppKit's
@@ -26,4 +29,4 @@ require (
 // (SourceList), search field (NativeSearchField) and split view, whose
 // dividers drag and whose sidebars slide, under the content. Until MyGo
 // does.
-replace github.com/egoist/mygo => github.com/hyoban/mygo v0.6.4-0.20261026012314-1b28ee4ddd05
+replace github.com/egoist/mygo => github.com/hyoban/mygo v0.7.2-0.20261028133817-983ea82f217e

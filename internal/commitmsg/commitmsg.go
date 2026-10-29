@@ -145,6 +145,7 @@ func Prompt(ctx context.Context, repo string, snapshot git.Snapshot) (prompt str
 	} else if log, err := git.Bounded(repo, 4096, "log", "-8", "--format=%s", snapshot.Head); err == nil {
 		b.WriteString("\nRecent commit subjects:\n" + log)
 	}
+	b.WriteString(commitConvention(ctx, repo, snapshot))
 	if stat != "" {
 		b.WriteString("\nSummary:\n" + stat)
 	}

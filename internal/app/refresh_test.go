@@ -9,6 +9,7 @@ import (
 	"peek/internal/testutil"
 	"testing"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -231,5 +232,126 @@ func TestRefreshKeepsChangeTree(t *testing.T) {
 	}
 	if !a.changeTree.state.Open.Has(code+"/z") || a.changeTree.state.Open.Has(tests) || !a.changeTree.has("z/util_test.go") {
 		t.Errorf("new folders: z open %v, tests open %v", a.changeTree.state.Open.Has(code+"/z"), a.changeTree.state.Open.Has(tests))
+	}
+}
+
+// Changes only in folders git ignores, as a build's output, leave the
+// history as it is; any other, or one git's own folder tells of, reads it.
+func TestIgnoredOnly(t *testing.T) {
+	repo := testutil.Repo(t)
+	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("/build/\n*.log\n"), 0o644)
+	os.MkdirAll(filepath.Join(repo, "build", "out"), 0o755)
+	hints := func(paths ...string) []mygo.FileEvent {
+		var evs []mygo.FileEvent
+		for _, p := range paths {
+			evs = append(evs, mygo.FileEvent{Op: mygo.FileHint, Path: p, IsDir: true})
+		}
+		return evs
+	}
+	for _, tc := range []struct {
+		paths []string
+		want  bool
+	}{
+		{[]string{"build"}, true},
+		{[]string{"build", "build/out"}, true},
+		{[]string{"build", "docs"}, false},
+		{[]string{"."}, false},
+		{[]string{".git"}, false},
+		{[]string{".git/refs/heads"}, false},
+	} {
+		if got := ignoredOnly(repo, hints(tc.paths...)); got != tc.want {
+			t.Errorf("ignoredOnly(%q) = %v, want %v", tc.paths, got, tc.want)
+		}
+	}
+	if ignoredOnly(repo, []mygo.FileEvent{{Op: mygo.FileRemove, Path: "."}}) {
+		t.Error("the project gone counts as ignored")
+	}
+}
+
+// The history marks the commits not pushed yet, and names the remote's
+// branch on the commit it is at.
+func TestHistoryMarksUnpushed(t *testing.T) {
+	repo, _ := testutil.RemoteRepo(t)
+	testutil.Git(t, repo, "commit", "--allow-empty", "-m", "Local change")
+	h := readHistory(repo)
+	var local, pushed git.Commit
+	for _, cm := range h.commits {
+		switch cm.Subject {
+		case "Local change":
+			local = cm
+		case "Initial commit":
+			pushed = cm
+		}
+	}
+	if !local.Unpushed || local.Remote != "" || pushed.Unpushed || pushed.Remote != "origin/main" {
+		t.Fatalf("local %+v, pushed %+v", local, pushed)
+	}
+}
+
+// Each repository shows again the entry of the history it showed last,
+// the branch's changes over the uncommitted ones that would show first,
+// however the branch moved meanwhile.
+func TestKeptEntry(t *testing.T) {
+	repo, _ := testutil.RemoteRepo(t)
+	testutil.Git(t, repo, "add", "--all")
+	testutil.Git(t, repo, "commit", "-q", "-m", "Update the files")
+	testutil.Git(t, repo, "push", "-q", "origin", "main")
+	testutil.Git(t, repo, "switch", "-q", "-c", "feature")
+	commit := func(name string) {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		testutil.Git(t, repo, "add", name)
+		testutil.Git(t, repo, "commit", "-q", "-m", "Add "+name)
+	}
+	commit("run.go")
+	if err := os.WriteFile(filepath.Join(repo, "wip.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	open := func() (*app, *ui.Tester) {
+		p := &projects{apps: map[string]*app{}, inline: true, dir: dir, entries: readEntries(dir)}
+		tt := ui.NewTester(p.view, 1200, 800)
+		p.open(repo)
+		settle(tt)
+		return p.cur, tt
+	}
+
+	a, tt := open()
+	if cm, ok := a.current(); !ok || cm.Hash != git.Worktree {
+		t.Fatalf("shown %+v, want the uncommitted changes first", cm)
+	}
+	a.commitRow = 1 // the branch's changes
+	settle(tt)
+	commit("more.go") // the branch moves on
+
+	a, _ = open()
+	if cm, ok := a.current(); !ok || !git.IsRange(cm.Hash) || cm.Summary != "2 commits since main" {
+		t.Fatalf("shown %+v, want the branch's changes as left", cm)
+	}
+}
+
+func TestGitOnly(t *testing.T) {
+	hints := func(paths ...string) []mygo.FileEvent {
+		var out []mygo.FileEvent
+		for _, p := range paths {
+			out = append(out, mygo.FileEvent{Op: mygo.FileHint, Path: p, IsDir: true})
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		events []mygo.FileEvent
+		want   bool
+	}{
+		{hints(".git"), true},
+		{hints(".git", ".git/refs/remotes/origin"), true},
+		{hints(".git", "web"), false},
+		{hints(".github"), false},
+		{hints("."), false},
+		{nil, false},
+	} {
+		if got := gitOnly(tc.events); got != tc.want {
+			t.Errorf("gitOnly(%v) = %v", tc.events, got)
+		}
 	}
 }

@@ -17,9 +17,10 @@ import (
 	"time"
 )
 
-// Finder-launched apps do not inherit the terminal's PATH. Check common
-// CLI locations as well as the Codex desktop app's bundled executable.
-func executable() (string, error) {
+// Executable finds the Codex CLI. Finder-launched apps do not inherit the
+// terminal's PATH. Check common CLI locations as well as the Codex desktop
+// app's bundled executable.
+func Executable() (string, error) {
 	if p, err := exec.LookPath("codex"); err == nil {
 		return p, nil
 	}
@@ -36,14 +37,19 @@ func executable() (string, error) {
 	return "", fmt.Errorf("Codex CLI was not found; install Codex and run codex login, then retry")
 }
 
-const commitModel = "gpt-6-luna" // fast and affordable, for easier tasks
+// CommitModel is the model CommitMessage uses where none is given: fast
+// and affordable, for easier tasks.
+const CommitModel = "gpt-6-luna"
 
 // CommitMessage embeds the staged diff and recent subjects in the prompt, so
 // Codex can answer in one turn without tools. It skips the user's Codex
 // config, whose plugins, hooks and reasoning effort suit coding sessions,
 // not this, and uses a small model with light reasoning, enough for a
-// commit message.
-func CommitMessage(ctx context.Context, repo string, snapshot git.Snapshot) (string, error) {
+// commit message: model, or CommitModel where it is "".
+func CommitMessage(ctx context.Context, repo string, snapshot git.Snapshot, model string) (string, error) {
+	if model == "" {
+		model = CommitModel
+	}
 	prompt, complete, err := commitmsg.Prompt(ctx, repo, snapshot)
 	if err != nil {
 		return "", err
@@ -54,7 +60,7 @@ func CommitMessage(ctx context.Context, repo string, snapshot git.Snapshot) (str
 		effort = "medium"
 	}
 	data, err := run(ctx, repo, commitmsg.Schema, prompt, 3*time.Minute, nil,
-		"--ignore-user-config", "--ignore-rules", "--model", commitModel, "-c", `model_reasoning_effort="`+effort+`"`)
+		"--ignore-user-config", "--ignore-rules", "--model", model, "-c", `model_reasoning_effort="`+effort+`"`)
 	if err != nil {
 		return "", err
 	}
@@ -131,7 +137,7 @@ func exec1(ctx context.Context, repo, schemaText, prompt string, timeout time.Du
 	if repo == "" {
 		return nil, fmt.Errorf("a repository is required for Codex")
 	}
-	bin, err := executable()
+	bin, err := Executable()
 	if err != nil {
 		return nil, err
 	}

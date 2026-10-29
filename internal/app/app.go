@@ -20,6 +20,7 @@ import (
 	"peek/internal/review"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater/native"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 )
@@ -59,6 +60,7 @@ type app struct {
 	dirty                    int    // the files the work tree changes, as last read
 	behind                   int    // the upstream's commits, as fetched, the branch has not
 	upstream                 string // the upstream's name, where the branch is behind it
+	fetchedAt                time.Time
 	pull                     pullState
 	review                   reviewState
 	agent                    agentKind // the agent Ship uses
@@ -151,16 +153,27 @@ type app struct {
 	frames                     int                   // counts the frames, for what waits for the next
 
 	// Files mode.
-	allTree  pathTree
-	filesFor int    // the row of the commit whose files are listed, or load; -1 for none
-	openFile string // the file whose text shows, or loads
-	code     *editor.State
-	picture  ui.ImageSource // the file's picture, in place of code
-	codeNote string         // why the text does not show
-	preview  *mdPreview     // a Markdown file's, beside its code
+	allTree            pathTree
+	filesFor           int    // the row of the commit whose files are listed, or load; -1 for none
+	openFile           string // the file whose text shows, or loads
+	code               *editor.State
+	codePath, codeHash string // the source actually displayed, while another may load
+	textGen            int    // rejects older file loads, including the same path in another commit
+	closed             bool
+	navigation         navigationState
+	packages           packagesState
+	openURL            func(string)   // opens pages, as the window's services do
+	picture            ui.ImageSource // the file's picture, in place of code
+	codeNote           string         // why the text does not show
+	preview            *mdPreview     // a Markdown file's, beside its code
 	// previewed is the Markdown files shown as their previews, their
 	// sources showing by default.
 	previewed map[string]bool
+	// restoring is how the project showed as it last closed, until the
+	// file it showed shows again (restoreView).
+	restoring *repoView
+
+	terminal terminalState
 }
 
 func newApp(repo string) *app {
@@ -181,6 +194,7 @@ func newApp(repo string) *app {
 		ask:          askState{template: -1},
 		compose:      askState{template: -1},
 		convRow:      -1,
+		terminal:     terminalState{height: 240},
 	}
 }
 
@@ -282,14 +296,16 @@ func (a *app) view(c *ui.Context) {
 			// The toolbar's room over the text in its band, as the jump
 			// bar under it, as Xcode's editor's.
 			ui.Column(c).Shrink(0).FillWidth().Background(chromeColor(a.theme)).Children(func() { a.toolbar(c, !tree, !history) })
-			switch conv := a.shownConversation(); {
-			case conv != nil:
-				a.conversationPane(c, conv)
-			case a.mode == modeFiles:
-				a.codePane(c)
-			default:
-				a.diffPane(c)
-			}
+			a.withTerminal(c, func() {
+				switch conv := a.shownConversation(); {
+				case conv != nil:
+					a.conversationPane(c, conv)
+				case a.mode == modeFiles:
+					a.codePane(c)
+				default:
+					a.diffPane(c)
+				}
+			})
 		})
 	}
 	if split != nil {
@@ -588,6 +604,7 @@ func (a *app) toolbar(c *ui.Context, start, end bool) {
 				if page := a.webPage(); page != "" {
 					a.linkButton(c, "host", hostIcon(a.host.Kind), "Open on "+a.host.Name(), page)
 				}
+				a.terminalButton(c)
 				if end {
 					a.actions(c)
 					a.paneButton(c, "history", historyIcon, &a.showHistory, &a.collapsedHistory, "History")
@@ -636,6 +653,12 @@ func (a *app) paneButton(c *ui.Context, key string, svg *ui.SVG, on, collapsed *
 	action := showOrHide(*on, pane)
 	ui.Button(c.Key(key), "").Shrink(0).Label(action).Tooltip(action).
 		Children(func() { ui.Icon(c, svg).Size(16, 16) }).OnClick(func() { a.toggle(on, collapsed) })
+}
+
+// terminalButton shows or hides the terminal under the text.
+func (a *app) terminalButton(c *ui.Context) {
+	ui.Button(c.Key("terminal"), "").Shrink(0).Label(showOrHide(a.terminal.shown, "Terminal")).Tooltip(terminalTip(a.terminal.shown)).
+		Children(func() { ui.Icon(c, terminalIcon).Size(16, 16) }).OnClick(a.toggleTerminal)
 }
 
 // projectTitle is the title of the window, the project's name, which a
@@ -829,7 +852,7 @@ func (a *app) history(c *ui.Context) {
 // tree's and a range's with their badges, over their summaries.
 func (a *app) commitItem(c *ui.Context) func(cm git.Commit) ui.SourceListItem {
 	dark := c.Theme().Dark
-	orange, purple := system(c, systemOrange), system(c, systemPurple)
+	orange, purple, blue := system(c, systemOrange), system(c, systemPurple), system(c, systemBlue)
 	ring := c.Theme().Background
 	services := c.Services()
 	return func(cm git.Commit) ui.SourceListItem {
@@ -847,13 +870,24 @@ func (a *app) commitItem(c *ui.Context) func(cm git.Commit) ui.SourceListItem {
 			})
 			return it
 		}
-		it.Subtitle = shortDate(cm.Time, time.Now()) + " · " + authors(cm)
+		// The remote's branch and the tags lead the line under the subject,
+		// which they leave whole.
+		var refs []string
+		if cm.Remote != "" {
+			refs = append(refs, cm.Remote)
+		}
+		it.Subtitle = strings.Join(append(append(refs, cm.Tags...), shortDate(cm.Time, time.Now()), authors(cm)), " · ")
 		it.Tooltip = commitMessage(cm)
+		if cm.Unpushed {
+			// An arrow up, as Xcode marks the commits to push.
+			it.Badges = []ui.SourceListBadge{{Text: "↑", Color: blue, Bold: true}}
+			it.Tooltip += "\n\nNot pushed yet"
+		}
 		var co *git.Person
-		key := fmt.Sprint("avatar", dark, cm.Author, cm.Email, a.avatar(cm.Email) != nil)
+		key := fmt.Sprintf("avatar%v%s%s%p", dark, cm.Author, cm.Email, a.avatar(cm.Email))
 		if len(cm.CoAuthors) > 0 {
 			co = &cm.CoAuthors[0]
-			key += fmt.Sprint(co.Name, co.Email, a.avatar(co.Email) != nil)
+			key += fmt.Sprintf("%s%s%p", co.Name, co.Email, a.avatar(co.Email))
 		}
 		it.Image = a.drawn(key, 30, func(c *ui.Context) {
 			ui.Box(c).Size(30, 30).Children(func() {
@@ -983,10 +1017,13 @@ func (a *app) treePane(c *ui.Context) {
 		title, key, tree, label = "Files", "all", &a.allTree, "Files"
 	}
 	tree.applyFilter()
+	members := a.together()
 	// The lines the changes add and delete in all, as GitHub's pull
-	// requests total them, or how many files the filter keeps.
+	// requests total them, or how many files the filter keeps; each
+	// repository's own where the sidebar lists several.
 	detail := func() {
 		switch {
+		case len(members) > 1:
 		case tree.keep != nil:
 			kept, all := tree.filterCount()
 			mutedDetail(c, fmt.Sprintf("%d of %s", kept, count(all, "file")))()
@@ -996,16 +1033,34 @@ func (a *app) treePane(c *ui.Context) {
 		}
 	}
 	sideColumn(c, sidebarBackground(c), toolbar, title, detail, func() {
-		switch {
-		case tree.dirs == nil:
-			loading(c)
-		case tree.keep != nil && len(tree.entries("")) == 0:
-			emptyNote(c, "No Results")
-		default:
-			a.treeView(c.Key(key), tree, label)
+		if len(members) > 1 {
+			a.memberTrees(c, members, key, label)
+		} else {
+			a.treeBody(c, tree, key, label, nil)
 		}
 		a.filterBar(c, key, &tree.filterState)
 	})
+}
+
+// treeBody is the sidebar's tree, or what shows while it has no rows;
+// pick, where not nil, runs as a file's row is clicked.
+func (a *app) treeBody(c *ui.Context, tree *pathTree, key, label string, pick func()) {
+	switch {
+	case tree.dirs == nil:
+		loading(c)
+	case tree.keep != nil && len(tree.entries("")) == 0:
+		emptyNote(c, "No Results")
+	default:
+		a.treeView(c.Key(key), tree, label, pick)
+	}
+}
+
+// sidebarTree is the tree the sidebar lists in the mode.
+func (a *app) sidebarTree() *pathTree {
+	if a.mode == modeFiles {
+		return &a.allTree
+	}
+	return &a.changeTree
 }
 
 // filterBar is the field at the bottom of the sidebar that filters its
@@ -1046,8 +1101,19 @@ func (a *app) filterFiles() {
 	tree.focus = true
 }
 
-func (a *app) treeView(c *ui.Context, tree *pathTree, label string) {
-	sideList(c, tree.view(c, label, a.treeItem(c, tree)))
+func (a *app) treeView(c *ui.Context, tree *pathTree, label string, pick func()) {
+	item := a.treeItem(c, tree)
+	if pick != nil {
+		inner := item
+		item = func(p string) ui.SourceListItem {
+			it := inner(p)
+			if !tree.isDir(p) {
+				it.OnClick = pick
+			}
+			return it
+		}
+	}
+	sideList(c, tree.view(c, label, item))
 }
 
 // treeItem returns what describes the rows of the tree, as the sidebar's
@@ -1164,11 +1230,17 @@ func emptyNote(c *ui.Context, note string) {
 }
 
 func (a *app) codePane(c *ui.Context) {
+	if a.openURL == nil {
+		a.openURL = c.Services().OpenURL
+	}
+	a.configureNavigation()
+	a.checkFileDependencies()
 	detail := ""
 	if a.picture != nil {
 		detail = pictureSize(a.picture)
 	}
 	jumpBar(c, a.openFile, git.Host{}, func() {
+		a.navigationTools(c)
 		if detail != "" {
 			ui.Text(c, detail).FontSize(smallSize).TextColor(c.Theme().TextMuted).SingleLine().Shrink(0)
 		}
@@ -1176,38 +1248,37 @@ func (a *app) codePane(c *ui.Context) {
 			a.previewButton(c)
 		}
 	}, func() {
-		switch {
-		case a.codeNote != "":
-			emptyNote(c, a.codeNote)
-		case a.picture != nil:
-			ui.Column(c).Grow(1).FillWidth().Center().Padding(c.Theme().Space(4)).Children(func() {
-				ui.Image(c, a.picture).Fit(ui.ScaleDown).MaxWidthPercent(100).MaxHeightPercent(100)
-			})
-		case a.code == nil:
-			emptyNote(c, "No file selected")
-		case a.previewing():
-			previewView(c, a.preview)
-		default:
-			editor.View(c.Key("code:"+a.openFile), a.code).Grow(1).FillWidth()
-		}
+		ui.Column(c.Key("code-body")).Grow(1).FillWidth().Children(func() {
+			switch {
+			case a.codeNote != "":
+				emptyNote(c, a.codeNote)
+			case a.picture != nil:
+				ui.Column(c).Grow(1).FillWidth().Center().Padding(c.Theme().Space(4)).Children(func() {
+					ui.Image(c, a.picture).Fit(ui.ScaleDown).MaxWidthPercent(100).MaxHeightPercent(100)
+				})
+			case a.code == nil:
+				emptyNote(c, "No file selected")
+			case a.previewing():
+				previewView(c, a.preview)
+			default:
+				a.code.Theme = codeTheme(a.prefs().CodeTheme, c.Theme().Dark)
+				editor.View(c.Key("code:"+a.openFile), a.code).Grow(1).FillWidth().Bind(&a.navigation.editor)
+				if a.navigation.focus {
+					a.navigation.focus = false
+					a.navigation.editor.Focus(c)
+				}
+			}
+			a.definitionChoices(c)
+		})
 	})
 }
 
 // sync starts loading what the choices in the history, the trees and the
 // mode ask for, once for each new choice.
 func (a *app) sync(c *ui.Context) {
+	a.checkNavigation()
 	a.applyShot(c)
-	if a.changeTree.sync() || a.allTree.sync() {
-		c.Services().Invalidate()
-	}
-	if a.commitRow >= 0 && a.commitRow < len(a.commits) && a.commitRow != a.loadedRow {
-		if a.loadedRow >= 0 {
-			a.navigator = navFiles // the entry chosen shows its changes
-		}
-		a.loadedRow = a.commitRow
-		a.loadCommit(a.commits[a.commitRow].Hash)
-	}
-	cm, ok := a.current()
+	cm, ok := a.loadChosen(c)
 	if !ok {
 		return
 	}
@@ -1223,16 +1294,39 @@ func (a *app) sync(c *ui.Context) {
 		} else {
 			a.followScroll(c)
 		}
+		a.releaseFarDiffs()
 	case modeFiles:
-		if a.filesFor != a.loadedRow {
-			a.filesFor = a.loadedRow
-			a.loadFiles(cm.Hash)
-		}
 		if p := a.allTree.chosen(); p != "" && !a.allTree.isDir(p) && p != a.openFile {
 			a.openFile = p
 			a.loadText(cm.Hash, p)
 		}
 	}
+}
+
+// loadChosen starts loading the changes of the commit chosen in the
+// history, and its files in the files mode, for the sidebar to list,
+// and returns the commit loaded, or loading.
+func (a *app) loadChosen(c *ui.Context) (git.Commit, bool) {
+	if a.changeTree.sync() || a.allTree.sync() {
+		c.Services().Invalidate()
+	}
+	if a.commitRow >= 0 && a.commitRow < len(a.commits) && a.commitRow != a.loadedRow {
+		if a.loadedRow >= 0 {
+			a.navigator = navFiles // the entry chosen shows its changes
+		}
+		a.loadedRow = a.commitRow
+		hash := a.commits[a.commitRow].Hash
+		a.loadCommit(hash)
+		if a.projects != nil {
+			a.projects.keepEntry(a.repo, hash)
+		}
+	}
+	cm, ok := a.current()
+	if ok && a.mode == modeFiles && a.filesFor != a.loadedRow {
+		a.filesFor = a.loadedRow
+		a.loadFiles(cm.Hash)
+	}
+	return cm, ok
 }
 
 // current returns the commit whose changes are loaded, or loading.
@@ -1248,7 +1342,9 @@ func (a *app) setMode(mode int) {
 	if mode == a.mode {
 		return
 	}
+	a.cancelNavigation()
 	a.mode, a.modeChoice = mode, mode
+	a.restoring = nil
 	cm, ok := a.current()
 	if !ok {
 		return
@@ -1267,10 +1363,10 @@ func (a *app) setMode(mode int) {
 
 // openInFiles shows the file in the files mode where the commit has it.
 func (a *app) openInFiles(hash, p string) bool {
-	if p == "" || !a.allTree.has(p) {
+	if p == "" || (!a.allTree.has(p) && !(hash == git.Worktree && filepath.IsAbs(p))) {
 		return false
 	}
-	a.allTree.show(p)
+	a.showFileInTree(p)
 	a.openFile = p
 	a.loadText(hash, p)
 	return true
@@ -1306,6 +1402,9 @@ func (a *app) loadCommits() {
 			a.readPullURL(false)
 			if len(h.commits) > 0 {
 				a.commitRow = landingRow(h)
+				if row, ok := a.keptRow(); ok {
+					a.commitRow = row // as the user left it
+				}
 			}
 		}
 	})
@@ -1338,6 +1437,7 @@ func (a *app) loadCommit(hash string) {
 				a.file = a.diffs[0].change.Path
 				a.changeTree.show(a.file)
 			}
+			a.restoreFile()
 		}
 	})
 }
@@ -1346,9 +1446,10 @@ func (a *app) loadCommit(hash string) {
 // file open where the commit has it too. The files and the text of the
 // commit shown before stay until the new ones come, not to flash empty.
 func (a *app) loadFiles(hash string) {
+	nest := a.prefs().NestFiles
 	a.background(func() func() {
 		files, err := git.ListFiles(a.repo, hash)
-		tree := fold(files)
+		tree := foldFiles(files, nest)
 		return func() {
 			if cm, ok := a.current(); !ok || cm.Hash != hash || a.filesFor != a.loadedRow {
 				return
@@ -1364,28 +1465,46 @@ func (a *app) loadFiles(hash string) {
 			}
 			if !a.openInFiles(hash, keep) {
 				a.openFile, a.code, a.picture, a.codeNote, a.preview = "", nil, nil, "", nil
+				a.restoring = nil // the file kept is gone
 			}
 		}
 	})
 }
 
 func (a *app) loadText(hash, p string) {
+	a.cancelNavigation()
+	a.textGen++
+	gen, repo := a.textGen, a.repo
 	a.background(func() func() {
-		text, err := git.FileText(a.repo, hash, p)
+		limit := maxTextSize // a text too large to show is not read whole
+		if isPicture(p) {
+			limit = 0
+		}
+		text, err := sourceText(repo, hash, p, limit)
 		picture, note := fileView(p, text, err)
+		var buf *editor.Buffer
+		if note == "" && picture == nil {
+			buf = codeBuffer(p, text)
+		}
 		return func() {
-			if p == a.openFile {
+			cm, ok := a.current()
+			if !a.closed && gen == a.textGen && p == a.openFile && ok && cm.Hash == hash {
 				var (
 					code    *editor.State
 					preview *mdPreview
 				)
-				if note == "" && picture == nil {
-					code = newCode(p, text)
+				if buf != nil {
+					code = codeOf(buf, a.prefs())
 					if isMarkdown(p) {
 						preview = a.newPreview(hash, p, text)
 					}
 				}
 				a.code, a.picture, a.codeNote, a.preview = code, picture, note, preview
+				a.codePath, a.codeHash = p, hash
+				a.restoreCaret(p)
+				if hash == git.Worktree {
+					a.placeCaret(p, code)
+				}
 			}
 		}
 	})
@@ -1405,7 +1524,7 @@ func extendPath() {
 	home, _ := os.UserHomeDir()
 	have := filepath.SplitList(os.Getenv("PATH"))
 	dirs := have
-	for _, d := range []string{"/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", filepath.Join(home, ".local", "bin")} {
+	for _, d := range []string{"/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", filepath.Join(home, ".local", "bin"), filepath.Join(home, "go", "bin"), filepath.Join(home, ".vite-plus", "bin"), filepath.Join(home, ".volta", "bin")} {
 		if !slices.Contains(have, d) && exists(d) {
 			dirs = append(dirs, d)
 		}
@@ -1414,9 +1533,13 @@ func extendPath() {
 }
 
 // Run opens the window over the repository the folder in args holds, or
-// the one the working directory is in, and runs the app until it quits.
+// the one the working directory is in, and runs the app until it quits;
+// run as the command line tool, it opens the repository in the app.
 func Run(args []string) {
 	extendPath()
+	if forward(args) {
+		return
+	}
 	dir := "."
 	if len(args) > 0 {
 		dir = args[0]
@@ -1427,9 +1550,17 @@ func Run(args []string) {
 	if err != nil && len(args) > 0 {
 		log.Fatal(err)
 	}
+	// Checks the releases on GitHub in the background, and offers new
+	// versions in a window of native UI.
+	mygo.Use(native.Plugin)
 	p := newProjects()
-	fileicons.FollowVSCode()
-	fileicons.Warm()
+	// The icons load while the app starts, ready by its first window.
+	icons := make(chan struct{})
+	go func() {
+		fileicons.FollowVSCode()
+		fileicons.Warm()
+		close(icons)
+	}()
 	// Folders opened from Finder, the Dock or File ▸ Open Recent.
 	mygo.App.OnOpenFile(func(path string) {
 		go p.openFolder(path, nil)
@@ -1443,19 +1574,26 @@ func Run(args []string) {
 			p.showWindow()
 		}
 	})
-	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { p.quitting = true })
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
+		p.quitting = true
+		p.keepViews()
+	})
 	p.followApp()
-	if p.menuBarOn {
+	if p.prefs().MenuBar {
 		useDock(false) // from the start, its icon never showing
 	}
 	mygo.App.WhenReady(func() {
+		<-icons
 		p.setMenu()
 		p.setDockMenu()
-		p.showMenuBar(p.menuBarOn)
+		p.showMenuBar(p.prefs().MenuBar)
 		p.followNetwork()
-		if err == nil {
+		switch {
+		case err == nil:
 			p.open(repo)
-		} else {
+		case mygo.App.WasOpenedAtLogin() && p.prefs().MenuBar:
+			// Opened as the user logged in, it waits in the menu bar.
+		default:
 			p.restore()
 		}
 	})

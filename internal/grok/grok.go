@@ -46,8 +46,10 @@ func executable() (string, error) {
 }
 
 // CommitMessage embeds the staged diff and recent subjects in the prompt, so
-// Grok Build can answer in one turn without tools.
-func CommitMessage(ctx context.Context, repo string, snapshot git.Snapshot) (string, error) {
+// Grok Build can answer in one turn without tools. It runs Grok Build's own
+// model; the model name, the user's choice for agents that take one, goes
+// unused.
+func CommitMessage(ctx context.Context, repo string, snapshot git.Snapshot, _ string) (string, error) {
 	prompt, _, err := commitmsg.Prompt(ctx, repo, snapshot)
 	if err != nil {
 		return "", err

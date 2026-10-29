@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGitHubPage(t *testing.T) {
@@ -186,6 +187,25 @@ func TestLoadCommitsBody(t *testing.T) {
 	}
 }
 
+func TestLoadCommitsTags(t *testing.T) {
+	dir := testutil.Repo(t)
+	testutil.Git(t, dir, "tag", "v1")
+	testutil.Git(t, dir, "tag", "-a", "v1.0.0", "-m", "Release")
+	testutil.Git(t, dir, "branch", "topic") // a branch is no tag
+	testutil.Git(t, dir, "commit", "-q", "--allow-empty", "-m", "Untagged")
+	commits, err := LoadCommits(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commits[0].Tags) != 0 {
+		t.Errorf("untagged commit's tags %q", commits[0].Tags)
+	}
+	got := slices.Sorted(slices.Values(commits[1].Tags))
+	if want := []string{"v1", "v1.0.0"}; !slices.Equal(got, want) {
+		t.Errorf("tags %q, want %q", got, want)
+	}
+}
+
 func TestLoadCommitsCoAuthors(t *testing.T) {
 	dir := testutil.Repo(t)
 	msg := "Pair on it\n\nWhy it changed.\n\nCo-authored-by: Bob Lee <bob@example.com>\nco-authored-by: Ada <ADA@example.com>\nCo-authored-by: Cy <cy@example.com>\nCo-authored-by: Bob Again <bob@example.com>\n"
@@ -244,5 +264,85 @@ func TestWithoutCoAuthors(t *testing.T) {
 		if got := withoutCoAuthors(tc.body, []string{"bob@example.com"}); got != tc.want {
 			t.Errorf("withoutCoAuthors(%q) = %q, want %q", tc.body, got, tc.want)
 		}
+	}
+}
+
+// Untracked files keep the lines counted while they stay as they were,
+// and are counted again once written, to the same size even.
+func TestUntrackedCountsKept(t *testing.T) {
+	repo := testutil.Repo(t)
+	p := filepath.Join(repo, "docs", "new.md")
+	added := func() int {
+		changes, err := LoadWorktreeChanges(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ch := range changes {
+			if ch.Path == "docs/new.md" {
+				return ch.Added
+			}
+		}
+		t.Fatal("docs/new.md not listed")
+		return 0
+	}
+	os.WriteFile(p, []byte("a\nb\n"), 0o644)
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(p, old, old)
+	if n := added(); n != 2 {
+		t.Fatalf("%d lines added, want 2", n)
+	}
+	if n := added(); n != 2 {
+		t.Fatalf("%d lines added counted again, want 2", n)
+	}
+	os.WriteFile(p, []byte("abc\n"), 0o644) // as large, a line
+	if n := added(); n != 1 {
+		t.Errorf("%d lines added once rewritten, want 1", n)
+	}
+}
+
+// Untracked files counted here count as git counts them: lines with and
+// without a last newline, empty and binary files, links, files git takes
+// for big, and those attributes apply to, which git counts.
+func TestCountDirectAsGit(t *testing.T) {
+	repo := testutil.Repo(t)
+	files := map[string]string{
+		"lines.txt":    "a\nb\nc\n",
+		"no-end.txt":   "a\nb",
+		"empty.txt":    "",
+		"crlf.txt":     "a\r\nb\r\n",
+		"cr.txt":       "a\rb\r",
+		"binary.dat":   "a\x00b\n",
+		"late-nul.dat": strings.Repeat("x\n", 4050) + "\x00", // text: past 8000 bytes
+		"big.txt":      strings.Repeat("line\n", 2000),       // over the threshold
+		"unicode.txt":  "héllo\n世界\n",
+		"attr.bin":     "a\nb\n",
+	}
+	for p, text := range files {
+		os.WriteFile(filepath.Join(repo, p), []byte(text), 0o644)
+	}
+	os.Symlink("lines.txt", filepath.Join(repo, "link"))
+	os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("*.bin binary\n"), 0o644)
+	testutil.Git(t, repo, "config", "core.bigFileThreshold", "9000")
+	paths := []string{"link"}
+	for p := range files {
+		paths = append(paths, p)
+	}
+	slices.Sort(paths)
+	want, err := untrackedBatch(repo, paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][2]int{}
+	rest := countDirect(repo, paths, got)
+	if !slices.Equal(rest, []string{"attr.bin"}) {
+		t.Errorf("left for git %q, want attr.bin alone", rest)
+	}
+	for _, p := range paths {
+		if _, ok := got[p]; ok && got[p] != want[p] {
+			t.Errorf("%s: counted %v, git counts %v", p, got[p], want[p])
+		}
+	}
+	if want["late-nul.dat"] != [2]int{4051, 0} || want["big.txt"] != [2]int{} {
+		t.Errorf("git counts %v and %v: the cases are not what they test", want["late-nul.dat"], want["big.txt"])
 	}
 }

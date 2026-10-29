@@ -1,8 +1,10 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
 	"peek/internal/fileicons"
@@ -25,12 +27,19 @@ type fileDiff struct {
 	// patch marks a diff of the patch's lines alone, as of a file too
 	// large to show whole, whose lines are not numbered as the file's.
 	patch  bool
-	read   bool // marked read: its diff folds away under its header
-	opened bool // read, its diff shown again by a click on its header
+	deps   dependencyNotes // what npmx found of a manifest's new text
+	read   bool            // marked read: its diff folds away under its header
+	opened bool            // read, its diff shown again by a click on its header
 }
 
 // folded reports whether the diff folds away under its header.
 func (d *fileDiff) folded() bool { return d.read && !d.opened }
+
+// diffRowKey keys a file's row of the stacked diffs.
+type diffRowKey struct {
+	header bool
+	path   string
+}
 
 // The stacked diffs list the commit's message first, then two rows a
 // file: its header, pinned at the top while its diff scrolls under it,
@@ -53,11 +62,12 @@ func (a *app) resetDiffs() {
 }
 
 // newDiff is the diff of a changed file of the commit, read where it was
-// marked so, or else where it is a test, docs or generated.
+// marked so, or else where it is a test, docs or generated, as the user
+// chose.
 func (a *app) newDiff(ch git.Change) *fileDiff {
 	read, ok := a.read[a.readKey(ch.Path)]
 	if !ok {
-		read = filekind.Of(ch.Path) != filekind.Code
+		read = a.prefs().FoldKinds && filekind.Of(ch.Path) != filekind.Code
 	}
 	return &fileDiff{change: ch, read: read}
 }
@@ -71,7 +81,7 @@ func (a *app) openChanges(known map[string][]string) {
 		if _, ok := known[dir]; ok || dir == "" {
 			continue
 		}
-		if !isGroup(dir) || dir == groupPrefix+filekind.Names[filekind.Code] {
+		if !isGroup(dir) || dir == groupPrefix+filekind.Names[filekind.Code] || !a.prefs().FoldKinds {
 			t.state.Open.Add(dir)
 		}
 	}
@@ -206,6 +216,46 @@ func (a *app) diffIndex(p string) int {
 	return -1
 }
 
+// heldLines is how many lines the diffs keep loaded at most, both sides
+// counted: past it, those farthest from the view let theirs go, to load
+// again as they come back into view, as a change of thousands of long
+// files would else keep them all once scrolled through.
+var heldLines = 1_000_000
+
+// releaseFarDiffs lets the diffs farthest from the view go, past
+// heldLines, but those near it or with what a reload would lose: lines
+// selected, a comment being written, or the change gone to.
+func (a *app) releaseFarDiffs() {
+	lines := func(d *fileDiff) int { return d.state.Old.LineCount() + d.state.New.LineCount() }
+	total := 0
+	var loaded []int
+	for i, d := range a.diffs {
+		if d.state != nil {
+			total += lines(d)
+			loaded = append(loaded, i)
+		}
+	}
+	if total <= heldLines {
+		return
+	}
+	first, last := a.diffList.Visible()
+	lo, hi := diffFile(first)-2, diffFile(last)+2
+	distance := func(i int) int { return max(lo-i, i-hi, 0) }
+	slices.SortFunc(loaded, func(i, j int) int { return distance(j) - distance(i) })
+	for _, i := range loaded {
+		d := a.diffs[i]
+		if total <= heldLines || distance(i) == 0 {
+			return
+		}
+		if _, selected := d.state.SelectedLines(); selected || d.loading || a.change.file == d.change.Path ||
+			slices.ContainsFunc(a.commentsOf(d), func(cm *comment) bool { return cm.editing }) {
+			continue
+		}
+		total -= lines(d)
+		d.state, d.stale = nil, false
+	}
+}
+
 // scrollToFile shows the file's diff at the top of the column, as a click
 // on it in the tree asks.
 func (a *app) scrollToFile(p string) {
@@ -270,7 +320,7 @@ func (a *app) diffPane(c *ui.Context) {
 			if row == 0 {
 				return "message"
 			}
-			return fmt.Sprintf("%v:%s", isHeader(row), a.diffs[diffFile(row)].change.Path)
+			return diffRowKey{isHeader(row), a.diffs[diffFile(row)].change.Path}
 		}
 		ui.List(c.Key("diffs"), &a.diffList, len(a.diffs)*2+1, func(row int) {
 			if row == 0 {
@@ -309,6 +359,9 @@ func (a *app) commitMessage(c *ui.Context) {
 			})
 			ui.Column(c).Shrink(0).AlignItems(ui.End).Gap(t.Space(0.5)).Children(func() {
 				ui.Text(c, cm.Time.Format("Monday, January 2, 2006 at 15:04")).FontSize(smallSize).TextColor(t.TextMuted).SingleLine()
+				if len(cm.Tags) > 0 {
+					a.commitTags(c, cm.Tags)
+				}
 				ui.Text(c, cm.Short).FontSize(smallSize).Font(monoFamily).TextColor(t.TextMuted).SingleLine().
 					Tooltip(cm.Hash).ContextMenu(func(m *ui.Menu) {
 					if m.Item("Copy Commit Hash").Chosen() {
@@ -320,6 +373,27 @@ func (a *app) commitMessage(c *ui.Context) {
 		})
 		if body := strings.TrimSpace(cm.Body); body != "" {
 			ui.Text(c, body).TextColor(t.Text).Selectable().FillWidth()
+		}
+	})
+}
+
+// commitTags are the tags on a commit, each in a capsule of its own.
+func (a *app) commitTags(c *ui.Context, tags []string) {
+	t := c.Theme()
+	services := c.Services()
+	ui.Row(c).Gap(t.Space(1)).AlignItems(ui.Center).Children(func() {
+		for _, tag := range tags {
+			ui.Row(c.Key("tag:"+tag)).Gap(t.Space(1)).AlignItems(ui.Center).Padding(0, t.Space(1.5)).
+				Radius(999).Background(t.TextMuted.Alpha(0.12)).TextColor(t.TextMuted).Tooltip("Tag " + tag).
+				ContextMenu(func(m *ui.Menu) {
+					if m.Item("Copy Tag Name").Chosen() {
+						services.WriteClipboard(tag)
+						c.Toast("Tag Name Copied")
+					}
+				}).Children(func() {
+				ui.Icon(c, tagIcon).Size(10, 10).Shrink(0)
+				ui.Text(c, tag).FontSize(smallSize).FontWeight(500).SingleLine()
+			})
 		}
 	})
 }
@@ -399,10 +473,16 @@ func (a *app) loadDiff(d *fileDiff) {
 	d.loading, d.stale = true, false
 	cm, _ := a.current()
 	gen := a.diffGen
-	shown := d.state != nil // which a reload updates where it is
-	ch := d.change          // a refresh may change its counts meanwhile
+	shown := d.state // which a reload updates where it is
+	ch := d.change   // a refresh may change its counts meanwhile
+	prefs := a.prefs()
 	a.background(func() func() {
-		before, after := git.FileTexts(a.repo, cm.Hash, ch)
+		// A text too large to show is not read whole: its patch shows.
+		limit := maxTextSize
+		if isBitmap(ch.Path) {
+			limit = 0
+		}
+		before, after, err := git.FileTextsAtMost(a.repo, cm.Hash, ch, limit)
 		if isBitmap(ch.Path) && before != after {
 			picture, note := decodePictures(ch.Path, before, after)
 			return func() {
@@ -413,6 +493,9 @@ func (a *app) loadDiff(d *fileDiff) {
 			}
 		}
 		note := textNote(before, after)
+		if errors.Is(err, git.ErrTooLarge) {
+			note = tooLarge
+		}
 		if note == "" && before == after {
 			note = "Only the file's mode changed"
 		}
@@ -421,8 +504,14 @@ func (a *app) loadDiff(d *fileDiff) {
 		if note == tooLarge {
 			patch = filePatch(a.repo, cm.Hash, ch)
 		}
+		// The texts shown are compared here, a long file's being long to
+		// read back.
+		oldSame, newSame := false, false
+		if shown != nil && note == "" && patch == nil {
+			oldSame, newSame = shown.Old.String() == before, shown.New.String() == after
+		}
 		var state *editor.DiffState
-		if patch != nil || note == "" && !shown {
+		if patch != nil || note == "" && shown == nil {
 			if patch != nil {
 				before, after, note = "", "", ""
 			}
@@ -435,9 +524,10 @@ func (a *app) loadDiff(d *fileDiff) {
 				// sideways would drift with the slant of every vertical
 				// swipe on a touchpad, the list taking the swipe's height
 				// and the diff under the pointer its width.
-				Wrap:  true,
-				Font:  codeFont,
-				Theme: codeTheme,
+				Wrap:             true,
+				IgnoreWhitespace: prefs.IgnoreWhitespace,
+				Font:             prefs.codeFont(),
+				Theme:            codeTheme(prefs.CodeTheme, false), // the window's appearance's as it shows
 			}
 			if patch != nil {
 				state.SetPatch(*patch)
@@ -457,8 +547,15 @@ func (a *app) loadDiff(d *fileDiff) {
 			if note == "" && d.state != nil {
 				// The diff shown follows its texts, keeping its place
 				// and the lines expanded.
-				resetText(d.state.Old, before)
-				resetText(d.state.New, after)
+				if d.state != shown {
+					oldSame, newSame = false, false
+				}
+				if !oldSame {
+					resetText(d.state.Old, before)
+				}
+				if !newSame {
+					resetText(d.state.New, after)
+				}
 				d.note = ""
 				return
 			}
@@ -503,18 +600,6 @@ func filePatch(repo, hash string, ch git.Change) *editor.FilePatch {
 // the system's monospaced font.
 const monoFamily = "MonoLisaCode, MonoLisa Variable, monospace"
 
-var codeFont = ui.Font{Family: monoFamily, Size: codeSize}
-
-// codeTheme is the default's, light or dark, with comments in italics.
-var codeTheme = func() *editor.Theme {
-	ct := &editor.Theme{} // the default's colors fill those left zero
-	ct.Tokens[editor.TokenComment].Italic = true
-	ct.Tokens[editor.TokenEmphasis].Italic = true
-	ct.Tokens[editor.TokenHeading].Bold = true
-	ct.Tokens[editor.TokenStrong].Bold = true
-	return ct
-}()
-
 // textNote tells why these texts do not show, "" where they do.
 func textNote(texts ...string) string {
 	for _, text := range texts {
@@ -543,9 +628,16 @@ func codeBuffer(p, text string) *editor.Buffer {
 
 // newCode shows a file's text, its imports folded away, as they are
 // seldom what a file is read for.
-func newCode(p, text string) *editor.State {
-	st := &editor.State{Buffer: codeBuffer(p, text), ReadOnly: true, SoftWrap: true, Font: codeFont, Theme: codeTheme}
-	st.FoldImports()
+func newCode(p, text string) *editor.State { return codeOf(codeBuffer(p, text), defaultSettings) }
+
+// codeOf shows the text of a buffer made off the UI thread, as a long
+// file's takes a while to, wrapped and its imports folded as the user
+// chose.
+func codeOf(buf *editor.Buffer, s settings) *editor.State {
+	st := &editor.State{Buffer: buf, ReadOnly: true, SoftWrap: s.WrapLines, Font: s.codeFont(), Theme: codeTheme(s.CodeTheme, false)}
+	if s.FoldImports {
+		st.FoldImports()
+	}
 	return st
 }
 

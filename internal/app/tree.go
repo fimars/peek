@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"peek/internal/filekind"
+	"peek/internal/filenesting"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -18,6 +19,7 @@ type pathTree struct {
 	dirs    map[string][]string // a directory's entries, "" the root
 	labels  map[string]string   // the names the rows show, by path
 	parents map[string]string   // the directory each item is in
+	nested  map[string]bool     // files with nested children, still selectable files
 	state   ui.OutlineState[string]
 	row     int
 	reveal  string // the path to choose once its row shows
@@ -35,10 +37,15 @@ type filterState struct {
 	toList bool                // the tree is to take the keys, as Down in the field asks
 	gen    int                 // counts the trees set, whose open folders differ
 	// filtered is the query keep holds the items of, for the tree of
-	// filteredGen; keep is nil without a query.
+	// filteredGen; keep is nil without a query. shown are the items each
+	// directory keeps, and matched and total count the files the query
+	// keeps and all of them, so that a frame need not walk the tree.
 	filtered    string
 	filteredGen int
 	keep        map[string]bool
+	shown       map[string][]string
+	matched     int
+	total       int
 	// saved are the folders open as filtering began, in the tree of
 	// savedGen.
 	saved    []string
@@ -52,6 +59,47 @@ type folded struct {
 	dirs    map[string][]string
 	labels  map[string]string
 	parents map[string]string
+	nested  map[string]bool
+}
+
+// foldFiles adds file nesting to the Files navigator, where nest asks.
+// Changes continues to use foldGrouped, keeping its file-kind groups and
+// diff order unchanged.
+func foldFiles(files []string, nest bool) folded {
+	f := fold(files)
+	if !nest {
+		return f
+	}
+	f.nested = map[string]bool{}
+	children := map[string][]string{}
+	for dir, entries := range f.dirs {
+		var names []string
+		paths := map[string]string{}
+		for _, p := range entries {
+			if f.dirs[p] == nil {
+				name := path.Base(p)
+				names = append(names, name)
+				paths[name] = p
+			}
+		}
+		parents := filenesting.Parents(names)
+		var roots []string
+		for _, p := range entries {
+			if parent, ok := parents[path.Base(p)]; ok && f.dirs[p] == nil {
+				parent = paths[parent]
+				children[parent] = append(children[parent], p)
+				f.parents[p] = parent
+				f.nested[parent] = true
+			} else {
+				roots = append(roots, p)
+			}
+		}
+		f.dirs[dir] = roots
+	}
+	for parent, entries := range children {
+		f.dirs[parent] = entries
+	}
+	return f
 }
 
 // fold builds the tree of these files: directories first, then by name,
@@ -169,6 +217,7 @@ func itemPath(item string) string {
 // set replaces the tree with a folded one, its directories closed.
 func (t *pathTree) set(f folded) {
 	t.dirs, t.labels, t.parents = f.dirs, f.labels, f.parents
+	t.nested = f.nested
 	t.state.Open.Clear()
 	t.row, t.reveal = -1, ""
 	t.gen++
@@ -187,7 +236,7 @@ func (t *pathTree) replace(f folded) {
 	}
 	t.set(f)
 	for _, dir := range opened {
-		if t.isDir(dir) {
+		if len(t.dirs[dir]) > 0 {
 			t.state.Open.Add(dir)
 		}
 	}
@@ -195,7 +244,7 @@ func (t *pathTree) replace(f folded) {
 		t.savedGen = t.gen // the folders to open again as the filter clears
 	}
 	if _, ok := t.labels[chosen]; ok {
-		t.choose(chosen)
+		t.show(chosen)
 	}
 }
 
@@ -213,7 +262,7 @@ func (t *pathTree) rows() []string {
 	walk = func(dir string) {
 		for _, p := range t.entries(dir) {
 			rows = append(rows, p)
-			if t.isDir(p) && t.state.Open.Has(p) {
+			if t.state.Open.Has(p) {
 				walk(p)
 			}
 		}
@@ -239,7 +288,7 @@ func (t *pathTree) applyFilter() {
 		if t.keep == nil {
 			return // a new tree, unfiltered
 		}
-		t.keep = nil
+		t.keep, t.shown = nil, nil
 		if t.savedGen == t.gen {
 			t.state.Open.Clear()
 			for _, dir := range t.saved {
@@ -257,23 +306,33 @@ func (t *pathTree) applyFilter() {
 		t.saved, t.savedGen = slices.Collect(t.state.Open.All()), t.gen
 	}
 	words := strings.Fields(q)
-	t.keep = map[string]bool{}
+	t.keep, t.shown = map[string]bool{}, map[string][]string{}
+	t.matched, t.total = 0, 0
 	var walk func(dir string) bool
 	walk = func(dir string) bool {
-		kept := false
+		var shown []string
 		for _, p := range t.dirs[dir] {
-			switch {
-			case t.isDir(p):
-				if walk(p) {
-					t.keep[p] = true
-					t.state.Open.Add(p)
+			kept := false
+			if !t.isDir(p) {
+				t.total++
+				if pathMatches(itemPath(p), words) {
+					t.matched++
 					kept = true
 				}
-			case pathMatches(itemPath(p), words):
-				t.keep[p], kept = true, true
+			}
+			if walk(p) {
+				kept = true
+				t.state.Open.Add(p)
+			}
+			if kept {
+				t.keep[p] = true
+				shown = append(shown, p)
 			}
 		}
-		return kept
+		if shown != nil {
+			t.shown[dir] = shown
+		}
+		return shown != nil
 	}
 	walk("")
 	t.choose(chosen)
@@ -297,27 +356,19 @@ func (t *pathTree) entries(dir string) []string {
 	if t.keep == nil {
 		return t.dirs[dir]
 	}
-	var kept []string
-	for _, p := range t.dirs[dir] {
-		if t.keep[p] {
-			kept = append(kept, p)
-		}
-	}
-	return kept
+	return t.shown[dir]
 }
 
 // filterCount counts the files the filter keeps, and all of them.
 func (t *pathTree) filterCount() (kept, all int) {
-	for _, p := range t.files() {
-		all++
-		if t.keep[p] {
-			kept++
-		}
+	if t.keep == nil {
+		n := len(t.files())
+		return n, n
 	}
-	return kept, all
+	return t.matched, t.total
 }
 
-func (t *pathTree) isDir(p string) bool { return t.dirs[p] != nil }
+func (t *pathTree) isDir(p string) bool { return t.dirs[p] != nil && !t.nested[p] }
 
 // has reports whether the tree lists the file.
 func (t *pathTree) has(p string) bool {
@@ -342,11 +393,10 @@ func (t *pathTree) files() []string { return t.filesUnder("") }
 func (t *pathTree) filesUnder(dir string) []string {
 	var files []string
 	for _, p := range t.dirs[dir] {
-		if t.isDir(p) {
-			files = append(files, t.filesUnder(p)...)
-		} else {
+		if !t.isDir(p) {
 			files = append(files, p)
 		}
+		files = append(files, t.filesUnder(p)...)
 	}
 	return files
 }

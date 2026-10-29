@@ -18,12 +18,12 @@ const (
 )
 
 // agentDef is an agent's name and icon, and what it writes the commit
-// message with.
+// message with: the model the user chose for it, "" for its own.
 type agentDef struct {
 	kind   agentKind
 	name   string
 	icon   *ui.SVG
-	commit func(context.Context, string, git.Snapshot) (string, error)
+	commit func(context.Context, string, git.Snapshot, string) (string, error)
 }
 
 var agentDefs = []agentDef{

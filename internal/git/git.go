@@ -6,8 +6,8 @@ package git
 import (
 	"bytes"
 	"cmp"
+	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,7 +30,13 @@ type Commit struct {
 	// name, as GitHub credits them, less the author.
 	CoAuthors []Person
 	Time      time.Time
-	Summary   string // what the work tree's entry says of its changes
+	Tags      []string // the tags on the commit
+	Summary   string   // what the work tree's entry says of its changes
+	// Remote names the remote's branch Ship pushes to where it is at the
+	// commit, as "origin/main", and Unpushed is that it does not have the
+	// commit yet; the history sets them from Published.
+	Remote   string
+	Unpushed bool
 }
 
 // Worktree is the hash of the entry for the changes not committed yet:
@@ -124,16 +130,18 @@ func LoadCommits(repo string, limit int) ([]Commit, error) {
 	// The body spans lines, so the records end with a separator of
 	// their own.
 	const sep, end, each = "\x1f", "\x1e", "\x1d"
-	out, err := git(repo, "log", fmt.Sprintf("-n%d", limit),
+	// %D, of the tags alone, is "tag: v2, tag: v1": no tag's name has
+	// a space.
+	out, err := git(repo, "log", fmt.Sprintf("-n%d", limit), "--decorate-refs=refs/tags/",
 		"--format=%H"+sep+"%h"+sep+"%s"+sep+"%an"+sep+"%ae"+sep+"%at"+sep+
-			"%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)"+sep+"%b"+end)
+			"%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)"+sep+"%D"+sep+"%b"+end)
 	if err != nil {
 		return nil, err
 	}
 	var commits []Commit
 	for record := range strings.SplitSeq(out, end) {
 		f := strings.Split(strings.TrimLeft(record, "\n"), sep)
-		if len(f) != 8 {
+		if len(f) != 9 {
 			continue
 		}
 		unix, _ := strconv.ParseInt(f[5], 10, 64)
@@ -150,7 +158,12 @@ func LoadCommits(repo string, limit int) ([]Commit, error) {
 				cm.CoAuthors = append(cm.CoAuthors, p)
 			}
 		}
-		cm.Body = withoutCoAuthors(f[7], credited)
+		for ref := range strings.SplitSeq(f[7], ", ") {
+			if tag, ok := strings.CutPrefix(ref, "tag: "); ok {
+				cm.Tags = append(cm.Tags, tag)
+			}
+		}
+		cm.Body = withoutCoAuthors(f[8], credited)
 		commits = append(commits, cm)
 	}
 	return commits, nil
@@ -274,7 +287,30 @@ func untrackedCounts(repo string, paths []string) (map[string][2]int, error) {
 		firstErr error
 	)
 	counts := map[string][2]int{}
-	for chunk := range slices.Chunk(paths, batch) {
+	// Files counted before and not changed since keep their counts: each
+	// refresh would else add them all to an index again.
+	attrs := attributesStamp(repo)
+	counted.Lock()
+	known := counted.repos[repo]
+	counted.Unlock()
+	if known.attrs != attrs {
+		known.files = nil
+	}
+	infos := make(map[string]os.FileInfo, len(paths))
+	var todo []string
+	for _, p := range paths {
+		info, err := os.Lstat(filepath.Join(repo, p))
+		if err == nil {
+			infos[p] = info
+		}
+		if c, ok := known.files[p]; ok && err == nil && unchangedSince(c.info, info) {
+			counts[p] = c.counts
+			continue
+		}
+		todo = append(todo, p)
+	}
+	todo = countDirect(repo, todo, counts)
+	for chunk := range slices.Chunk(todo, batch) {
 		wg.Go(func() {
 			n, err := untrackedBatch(repo, chunk)
 			mu.Lock()
@@ -283,11 +319,172 @@ func untrackedCounts(repo string, paths []string) (map[string][2]int, error) {
 				firstErr = cmp.Or(firstErr, err)
 				return
 			}
-			maps.Copy(counts, n)
+			for _, p := range chunk {
+				counts[p] = n[p]
+			}
 		})
 	}
 	wg.Wait()
+	kept := countedFiles{attrs: attrs, files: make(map[string]countedFile, len(counts))}
+	for p, c := range counts {
+		if info := infos[p]; info != nil {
+			kept.files[p] = countedFile{info, c}
+		}
+	}
+	counted.Lock()
+	counted.repos[repo] = kept
+	counted.Unlock()
 	return counts, firstErr
+}
+
+// countDirect counts here the lines of the files no attribute applies to,
+// as git counts those of a file it is to add, into counts, and returns
+// the others, for git to count: what an attribute may filter, convert or
+// diff otherwise, what is not a file, and what is larger than git's big
+// files' threshold, which it takes for binary. Adding thousands of files
+// to an index took a second, the first time a project opened.
+func countDirect(repo string, paths []string, counts map[string][2]int) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	var (
+		wg        sync.WaitGroup
+		attrs     map[string]bool
+		attrsErr  error
+		threshold = int64(512 << 20) // git's default
+	)
+	wg.Go(func() { attrs, attrsErr = withAttributes(repo, paths) })
+	wg.Go(func() {
+		if out, err := git(repo, "config", "--type=int", "--get", "core.bigFileThreshold"); err == nil {
+			if n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64); err == nil {
+				threshold = n
+			}
+		}
+	})
+	wg.Wait()
+	if attrsErr != nil {
+		return paths
+	}
+	var direct, rest []string
+	for _, p := range paths {
+		if attrs[p] {
+			rest = append(rest, p)
+		} else {
+			direct = append(direct, p)
+		}
+	}
+	results := make([][2]int, len(direct))
+	ok := make([]bool, len(direct))
+	next := make(chan int)
+	for range min(8, len(direct)) {
+		wg.Go(func() {
+			for i := range next {
+				results[i], ok[i] = countNewLines(filepath.Join(repo, direct[i]), threshold)
+			}
+		})
+	}
+	for i := range direct {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	for i, p := range direct {
+		if ok[i] {
+			counts[p] = results[i]
+		} else {
+			rest = append(rest, p)
+		}
+	}
+	return rest
+}
+
+// withAttributes reports which of the paths an attribute applies to.
+func withAttributes(repo string, paths []string) (map[string]bool, error) {
+	out, err := gitWith(repo, nil, strings.Join(paths, "\x00")+"\x00", "check-attr", "-z", "--stdin", "--all")
+	if err != nil {
+		return nil, err
+	}
+	// Each attribute set is three fields: the path, the attribute and its
+	// value.
+	fields := strings.Split(out, "\x00")
+	attrs := map[string]bool{}
+	for i := 0; i+2 < len(fields); i += 3 {
+		attrs[fields[i]] = true
+	}
+	return attrs, nil
+}
+
+// countNewLines counts the lines of a new file as git's numstat does: the
+// lines, the last one without a newline too, or none for a binary file,
+// with a NUL in its first 8000 bytes or larger than threshold; a link's
+// target is its text. It reports false for what it cannot count so. A
+// file's reading is the review's snapshot's too (ReadFileFacts).
+func countNewLines(p string, threshold int64) ([2]int, bool) {
+	info, err := os.Lstat(p)
+	if err != nil {
+		return [2]int{}, false
+	}
+	var data []byte
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(p)
+		if err != nil {
+			return [2]int{}, false
+		}
+		data = []byte(target)
+	case !info.Mode().IsRegular():
+		return [2]int{}, false
+	case info.Size() > threshold:
+		return [2]int{}, true
+	default:
+		ff, err := ReadFileFacts(p, info)
+		switch {
+		case err != nil:
+			return [2]int{}, false
+		case ff.Binary:
+			return [2]int{}, true
+		}
+		return [2]int{ff.Lines, 0}, true
+	}
+	if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
+		return [2]int{}, true
+	}
+	n := bytes.Count(data, []byte{'\n'})
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		n++
+	}
+	return [2]int{n, 0}, true
+}
+
+// counted are the line counts of each repository's untracked files as
+// they were last counted, with its attributes then, which tell how git
+// counts.
+var counted = struct {
+	sync.Mutex
+	repos map[string]countedFiles
+}{repos: map[string]countedFiles{}}
+
+type countedFiles struct {
+	attrs string
+	files map[string]countedFile
+}
+
+type countedFile struct {
+	info   os.FileInfo
+	counts [2]int
+}
+
+// attributesStamp tells the attributes files of the repository as they
+// are, to tell when they changed.
+func attributesStamp(repo string) string {
+	var b strings.Builder
+	for _, p := range []string{".gitattributes", ".git/info/attributes"} {
+		if info, err := os.Stat(filepath.Join(repo, p)); err == nil {
+			fmt.Fprintf(&b, "%d %d;", info.Size(), info.ModTime().UnixNano())
+		}
+		b.WriteString("|")
+	}
+	return b.String()
 }
 
 // untrackedBatch counts the lines of a batch of untracked files, as
@@ -374,6 +571,13 @@ func parseNameStatus(out string) []Change {
 // the commit, the work tree's on disk for the uncommitted changes, and at
 // the base and the head of a Range.
 func FileTexts(repo, hash string, ch Change) (before, after string) {
+	before, after, _ = FileTextsAtMost(repo, hash, ch, 0)
+	return before, after
+}
+
+// FileTextsAtMost is FileTexts, both read at once, or ErrTooLarge where
+// either is longer than limit bytes; 0 for no limit.
+func FileTextsAtMost(repo, hash string, ch Change, limit int) (before, after string, err error) {
 	parent := hash + "^"
 	if hash == Worktree {
 		parent = "HEAD"
@@ -381,13 +585,36 @@ func FileTexts(repo, hash string, ch Change) (before, after string) {
 	if base, head, ok := SplitRange(hash); ok {
 		parent, hash = base, head
 	}
+	var (
+		wg                  sync.WaitGroup
+		errBefore, errAfter error
+	)
 	if ch.Status != "A" {
-		before, _ = FileText(repo, parent, ch.Old)
+		wg.Go(func() { before, errBefore = FileTextAtMost(repo, parent, ch.Old, limit) })
 	}
 	if ch.Status != "D" {
-		after, _ = FileText(repo, hash, ch.Path)
+		wg.Go(func() { after, errAfter = FileTextAtMost(repo, hash, ch.Path, limit) })
 	}
-	return before, after
+	wg.Wait()
+	if errors.Is(errBefore, ErrTooLarge) || errors.Is(errAfter, ErrTooLarge) {
+		return "", "", ErrTooLarge
+	}
+	return before, after, nil
+}
+
+// FileTextAtMost is FileText, or ErrTooLarge where the text is longer than
+// limit bytes, not read whole only to be left; 0 for no limit.
+func FileTextAtMost(repo, hash, p string, limit int) (string, error) {
+	if limit <= 0 {
+		return FileText(repo, hash, p)
+	}
+	if hash == Worktree {
+		if fi, err := os.Stat(filepath.Join(repo, p)); err == nil && fi.Size() > int64(limit) {
+			return "", ErrTooLarge
+		}
+		return FileText(repo, hash, p)
+	}
+	return showFile(repo, Tip(hash)+":"+p, limit)
 }
 
 // FileText returns the file's text in the commit, or on disk.
@@ -396,7 +623,7 @@ func FileText(repo, hash, p string) (string, error) {
 		b, err := os.ReadFile(filepath.Join(repo, p))
 		return string(b), err
 	}
-	return git(repo, "show", Tip(hash)+":"+p)
+	return showFile(repo, Tip(hash)+":"+p, 0)
 }
 
 // Patch returns git's patch of the change the commit makes to a file, or
@@ -417,6 +644,30 @@ func Patch(repo, hash string, ch Change, limit int) (string, error) {
 	// a/ and b/ whatever the user's diff.noprefix or diff.mnemonicPrefix.
 	args = append(args, "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--")
 	return Bounded(repo, limit, append(args, paths...)...)
+}
+
+// AllIgnored reports whether git ignores every one of these paths of the
+// work tree, as the folders a build writes into; false where it cannot
+// tell.
+func AllIgnored(repo string, paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	// check-ignore fails, as it exits 1, where it ignores none.
+	out, err := gitWith(repo, nil, strings.Join(paths, "\x00")+"\x00", "check-ignore", "-z", "--stdin")
+	if err != nil {
+		return false
+	}
+	ignored := map[string]bool{}
+	for _, p := range nulSeparated(out) {
+		ignored[p] = true
+	}
+	for _, p := range paths {
+		if !ignored[p] {
+			return false
+		}
+	}
+	return true
 }
 
 // ListFiles returns every file of the commit, a Range's head's, or of the
