@@ -574,7 +574,10 @@ func (p *projects) intelligenceSettings(c *ui.Context) {
 			ui.Text(c, "Not found").TextColor(t.TextMuted)
 			return
 		}
-		ui.Text(c, w.codex).Selectable()
+		ui.Row(c).Gap(t.Space(1)).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, codexIcon).Size(smallSize, smallSize)
+			ui.Text(c, w.codex).Selectable()
+		})
 	}).Description("Install Codex and sign in with codex login to ask, review and ship.")
 	settingsSection(c)
 	settingsField(c, "Pi CLI", func() {
@@ -582,7 +585,10 @@ func (p *projects) intelligenceSettings(c *ui.Context) {
 			ui.Text(c, "Not found").TextColor(t.TextMuted)
 			return
 		}
-		ui.Text(c, w.piExe).Selectable()
+		ui.Row(c).Gap(t.Space(1)).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, piIcon).Size(smallSize, smallSize)
+			ui.Text(c, w.piExe).Selectable()
+		})
 	}).Description("Install the Pi coding agent for the other choice beside Ship: ask, review and ship with it.")
 	settingsSection(c)
 	settingsField(c, "Commit Messages", func() {

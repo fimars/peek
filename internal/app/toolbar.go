@@ -80,7 +80,11 @@ func (a *app) toolbarSpec(c *ui.Context) *mygo.Toolbar {
 			ToolTip: terminalTip(a.terminal.shown), Click: a.toggleTerminal},
 		mygo.ToolbarItem{ID: "history-separator", Kind: mygo.ToolbarSeparator, Divider: 1},
 		mygo.ToolbarItem{ID: "history-start", Kind: mygo.ToolbarFlexibleSpace},
-		mygo.ToolbarItem{ID: "agent", Symbol: "sparkles", Title: agent.name, Label: "Agent",
+		// AppKit's toolbar takes no image of the app's own, so the agent
+		// shows as the system's symbol alone, without its name: which agent
+		// it is tells the tooltip, and the marks the settings and the view's
+		// chooser menu draw.
+		mygo.ToolbarItem{ID: "agent", Symbol: "sparkles", Label: agent.name,
 			ToolTip:  "Ship with " + agent.name + "; click for " + agentDefOf(next).name,
 			Disabled: a.push.running, Click: a.toggleAgent},
 	)

@@ -329,8 +329,10 @@ func TestNativeToolbarShowsTheAgentAndHost(t *testing.T) {
 		t.Fatalf("no toolbar item %q", id)
 		return mygo.ToolbarItem{}
 	}
-	if got := item("agent").Title; got != "Codex" {
-		t.Fatalf("agent %q, want Codex", got)
+	// The agent shows as the system's symbol alone, which agent it is
+	// telling its label and tooltip.
+	if got := item("agent").Title; got != "" {
+		t.Fatalf("agent titled %q, want none", got)
 	}
 	if got := item("web").Label; got != "Open on GitLab" {
 		t.Fatalf("web label %q, want GitLab", got)
@@ -340,8 +342,8 @@ func TestNativeToolbarShowsTheAgentAndHost(t *testing.T) {
 	}
 	a.toggleAgent()
 	tt.Frame()
-	if got := item("agent").Title; got != "Pi" {
-		t.Fatalf("agent %q, want Pi", got)
+	if got := item("agent").Label; got != "Pi" {
+		t.Fatalf("agent label %q, want Pi", got)
 	}
 	if got := item("agent").ToolTip; !strings.Contains(got, "Ship with Pi") {
 		t.Fatalf("agent tooltip %q", got)
