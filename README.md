@@ -4,6 +4,18 @@ A native git diff viewer for macOS, built in Go with [MyGo](https://github.com/e
 
 Browse uncommitted changes, compare a branch, or read any commit's files. Follow definitions in the working tree, ask Codex about the code, and commit and push from the same window. Peek refreshes as repositories change and remembers where you left each one.
 
+## About this fork
+
+This is [fimars/peek](https://github.com/fimars/peek), a fork of
+[hyoban/peek](https://github.com/hyoban/peek) kept for one reason: work
+runs on GitLab and Grok Build. The fork links references, branches and
+repository pages to whatever code host a repository is on — GitLab's too,
+with its mark beside its repositories — and lets **Ship** and **Review**
+write with either Codex or Grok Build, chosen beside the **Ship** button.
+Everything else follows upstream, merged in as it releases. Upstream's
+install command below installs the original Peek; this fork builds from
+source.
+
 ## Changes
 
 Read the selected commit, uncommitted changes, or branch comparison as a stack of diffs, with changed files on the left and history on the right. Switch between unified and side-by-side views, mark files as viewed, and step through changes across files.
