@@ -63,7 +63,7 @@ type app struct {
 	fetchedAt                time.Time
 	pull                     pullState
 	review                   reviewState
-	agent                    agentKind // the agent Ship uses
+	agent                    agentKind // the agent the conversations and Ship use
 	answer                   answerState
 	ask                      askState    // the popover's
 	compose                  askState    // a new conversation's field's
@@ -198,8 +198,8 @@ func newApp(repo string) *app {
 	}
 }
 
-// agentKind is the agent Ship uses: the projects' where there are, else
-// this app's, as tests keep it.
+// agentKind is the agent the conversations and Ship use: the projects'
+// where there are, else this app's, as tests keep it.
 func (a *app) agentKind() agentKind {
 	if a.projects != nil {
 		return a.projects.agent

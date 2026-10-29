@@ -1,5 +1,5 @@
 // Package testutil holds what the tests of several packages share: the
-// repositories they run over, and stand-ins for Codex, Grok Build and gh.
+// repositories they run over, and stand-ins for Codex, Pi and gh.
 package testutil
 
 import (
@@ -199,71 +199,58 @@ cp "$PEEK_TEST_REVIEW_RESPONSE" "$output"
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// grokScript answers as Grok Build's streaming JSON does: the events file,
-// then the response as the end event's structured output.
-const grokScript = `#!/bin/sh
-if [ -n "$PEEK_TEST_GROK_COUNT" ]; then printf '1\n' >> "$PEEK_TEST_GROK_COUNT"; fi
+// piScript answers as the Pi CLI does: in JSON mode, the events file; in
+// print mode, the response as the final text.
+const piScript = `#!/bin/sh
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --prompt-file) shift; if [ -n "$PEEK_TEST_GROK_PROMPT" ]; then cp "$1" "$PEEK_TEST_GROK_PROMPT"; fi ;;
-    --cwd) shift; cwd="$1"; if [ -n "$PEEK_TEST_GROK_CWD" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_CWD"; fi ;;
-    --json-schema) shift; if [ -n "$PEEK_TEST_GROK_SCHEMA" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_SCHEMA"; fi ;;
-    --sandbox) shift
-      if [ -n "$PEEK_TEST_GROK_SANDBOX" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_SANDBOX"; fi
-      if [ "$1" = workspace ] && [ -n "$cwd" ]; then : > "$cwd/grok-wrote"; fi
-      if [ -n "$PEEK_TEST_GROK_READONLY_FAIL" ]; then
-        if [ "$1" = read-only ]; then
-          echo "warning: sandbox could not be applied: socket deny resolution failed: could not resolve runtime-socket deny path /var/run/docker.sock: endpoint is a symlink to a path outside the deny list" >&2
-          echo "error: could not apply the 'read-only' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing." >&2
-          exit 1
-        fi
-        test "$1" = workspace || exit 2
-      else
-        test "$1" = read-only || exit 2
-      fi ;;
-    --reasoning-effort) shift; if [ -n "$PEEK_TEST_GROK_EFFORT" ]; then printf '%s' "$1" > "$PEEK_TEST_GROK_EFFORT"; fi ;;
-    --output-format) shift; test "$1" = streaming-json || exit 3 ;;
+    --mode) shift; mode="$1"; if [ -n "$PEEK_TEST_PI_MODE" ]; then printf '%s' "$1" > "$PEEK_TEST_PI_MODE"; fi ;;
+    --session-id) shift; if [ -n "$PEEK_TEST_PI_SESSION" ]; then printf '%s' "$1" > "$PEEK_TEST_PI_SESSION"; fi ;;
+    --model) shift; if [ -n "$PEEK_TEST_PI_MODEL" ]; then printf '%s' "$1" > "$PEEK_TEST_PI_MODEL"; fi ;;
+    --thinking) shift; if [ -n "$PEEK_TEST_PI_THINKING" ]; then printf '%s' "$1" > "$PEEK_TEST_PI_THINKING"; fi ;;
+    -nc) if [ -n "$PEEK_TEST_PI_NC" ]; then : > "$PEEK_TEST_PI_NC"; fi ;;
   esac
   shift
 done
-if [ -n "$PEEK_TEST_GROK_FAIL" ]; then echo "error: quota exceeded" >&2; exit 1; fi
-if [ -n "$PEEK_TEST_GROK_EVENTS" ]; then cat "$PEEK_TEST_GROK_EVENTS"; fi
-if [ -n "$PEEK_TEST_GROK_RESPONSE" ]; then
-  printf '{"type":"end","structuredOutput":'
-  cat "$PEEK_TEST_GROK_RESPONSE"
-  printf '}\n'
+if [ -n "$PEEK_TEST_PI_PROMPT" ]; then cat > "$PEEK_TEST_PI_PROMPT"; else cat > /dev/null; fi
+if [ -n "$PEEK_TEST_PI_FAIL" ]; then echo "Error: quota exceeded" >&2; exit 1; fi
+if [ "$mode" = json ]; then
+  if [ -n "$PEEK_TEST_PI_EVENTS" ]; then cat "$PEEK_TEST_PI_EVENTS"; fi
+  exit 0
 fi
+if [ -n "$PEEK_TEST_PI_RESPONSE" ]; then cat "$PEEK_TEST_PI_RESPONSE"; fi
 `
 
-// fakeGrok puts the grok of grokScript first on the PATH.
-func fakeGrok(t *testing.T) {
+// fakePi puts the pi of piScript first on the PATH.
+func fakePi(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "grok"), []byte(grokScript), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "pi"), []byte(piScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// FakeGrok puts a grok on the PATH that writes response as the answer.
-func FakeGrok(t *testing.T, response string) {
+// FakePi puts a pi on the PATH that writes response as the final text of
+// its print mode.
+func FakePi(t *testing.T, response string) {
 	t.Helper()
-	file := filepath.Join(t.TempDir(), "response.json")
+	file := filepath.Join(t.TempDir(), "response.txt")
 	if err := os.WriteFile(file, []byte(response), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PEEK_TEST_GROK_RESPONSE", file)
-	fakeGrok(t)
+	t.Setenv("PEEK_TEST_PI_RESPONSE", file)
+	fakePi(t)
 }
 
-// FakeGrokEvents puts a grok on the PATH that streams events, and no answer
-// of its own.
-func FakeGrokEvents(t *testing.T, events string) {
+// FakePiEvents puts a pi on the PATH that streams the events of its JSON
+// mode, and no answer of its own.
+func FakePiEvents(t *testing.T, events string) {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "events.ndjson")
 	if err := os.WriteFile(file, []byte(events), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PEEK_TEST_GROK_EVENTS", file)
-	fakeGrok(t)
+	t.Setenv("PEEK_TEST_PI_EVENTS", file)
+	fakePi(t)
 }

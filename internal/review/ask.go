@@ -38,6 +38,20 @@ func CommitSnapshot(repo, hash string) (Snapshot, error) {
 // answer streams to delta as Codex writes it, and its steps to progress,
 // as stages, where they are not nil.
 func Ask(ctx context.Context, repo, session string, snapshot Snapshot, request string, progress func(string, string), delta func(string)) (string, string, error) {
+	text, session, err := codex.Stream(ctx, repo, session, askPrompt(session, snapshot, request), 10*time.Minute,
+		func(e codex.Event) { eventProgress(e.Delta, e.Step, e.Detail, "Codex", progress, delta) })
+	if err != nil {
+		return "", session, err
+	}
+	if text == "" {
+		return "", session, fmt.Errorf("Codex returned no answer")
+	}
+	return text, session, nil
+}
+
+// askPrompt is the prompt of a request about the changes of the snapshot:
+// the scope it is of, told where the conversation is new.
+func askPrompt(session string, snapshot Snapshot, request string) string {
 	prompt := strings.TrimSpace(request) + "\n\n"
 	if session == "" {
 		prompt += "The request is about the changes in the scope below. Explore the repository as you need. " +
@@ -48,31 +62,28 @@ func Ask(ctx context.Context, repo, session string, snapshot Snapshot, request s
 	if session == "" {
 		prompt += "\n\n" + snapshot.explainScope()
 	}
-	text, session, err := codex.Stream(ctx, repo, session, prompt, 10*time.Minute, func(e codex.Event) {
-		if e.Delta != "" && delta != nil {
-			delta(e.Delta)
-		}
-		if e.Step == "" || progress == nil {
-			return
-		}
-		switch e.Step {
-		case "reasoning":
-			progress("Thinking…", "Codex is thinking")
-		case "commandExecution":
-			progress("Inspecting…", e.Detail)
-		case "mcpToolCall", "webSearch":
-			progress("Inspecting…", "Codex is gathering context")
-		case "agentMessage":
-			progress("Answering…", "Codex is answering")
-		}
-	})
-	if err != nil {
-		return "", session, err
+	return prompt
+}
+
+// eventProgress tells an agent's event, of the steps Codex names, to
+// delta and progress under the agent's name, where they are not nil.
+func eventProgress(deltaText, step, detail, name string, progress func(string, string), delta func(string)) {
+	if deltaText != "" && delta != nil {
+		delta(deltaText)
 	}
-	if text == "" {
-		return "", session, fmt.Errorf("Codex returned no answer")
+	if step == "" || progress == nil {
+		return
 	}
-	return text, session, nil
+	switch step {
+	case "reasoning":
+		progress("Thinking…", name+" is thinking")
+	case "commandExecution":
+		progress("Inspecting…", detail)
+	case "mcpToolCall", "webSearch":
+		progress("Inspecting…", name+" is gathering context")
+	case "agentMessage":
+		progress("Answering…", name+" is answering")
+	}
 }
 
 func (s Snapshot) explainScope() string {

@@ -2,7 +2,7 @@ package app
 
 import "github.com/egoist/mygo/ui"
 
-// agentButton chooses the agent Ship uses, its icon alone as a menu
+// agentButton chooses the agent the conversations and Ship use, its icon alone as a menu
 // button.
 func (a *app) agentButton(c *ui.Context) {
 	def := agentDefOf(a.agentKind())
@@ -30,9 +30,9 @@ func (a *app) agentButton(c *ui.Context) {
 // toggleAgent chooses the other agent, as the toolbar's agent button does
 // where AppKit's toolbar has no menu of its own.
 func (a *app) toggleAgent() {
-	if a.agentKind() == agentGrok {
+	if a.agentKind() == agentPi {
 		a.chooseAgent(agentCodex)
 		return
 	}
-	a.chooseAgent(agentGrok)
+	a.chooseAgent(agentPi)
 }

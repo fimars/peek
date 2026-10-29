@@ -62,8 +62,8 @@ func (a *app) reviewSourceOf(scope string) review.Snapshot {
 	return a.reviewSource
 }
 
-// startReview has Codex review the changes, as request asks where the
-// user asked more: "" for none.
+// startReview has the conversation's agent review the changes, as
+// request asks where the user asked more: "" for none.
 func (a *app) startReview(request string) {
 	if a.codexRunning() || a.changing() {
 		return
@@ -84,6 +84,7 @@ func (a *app) startReview(request string) {
 		return
 	}
 	conv := a.newConversation("Review", snapshot.Scope, shown)
+	def := conv.agent()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	repo, blocking := a.repo, a.prefs().ReviewBlocking
 	a.review = reviewState{codexTask: codexTask{running: true, cancel: cancel, phase: "Checking…", detail: "Checking the review snapshot"},
@@ -93,8 +94,8 @@ func (a *app) startReview(request string) {
 		defer cancel()
 		var session string
 		run := func(ctx context.Context, repo string, snapshot review.Snapshot) (review.Result, error) {
-			progress("Starting…", "Starting Codex")
-			result, id, err := review.CodexSession(ctx, repo, snapshot, request, progress)
+			progress("Starting…", "Starting "+def.name)
+			result, id, err := def.review(ctx, repo, snapshot, request, progress)
 			session = id
 			progress("Checking…", "Validating the review result and checking for changes")
 			return result, err

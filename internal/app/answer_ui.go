@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// answerState is Codex's work on a request of a conversation, answered
-// in Markdown: conv's turn at index turn.
+// answerState is the agent's work on a request of a conversation,
+// answered in Markdown: conv's turn at index turn.
 type answerState struct {
 	codexTask
 	conv *conversation
@@ -55,8 +55,8 @@ func (a *app) startAnswer(title, request string) {
 	a.runAnswer(a.newConversation(title, scope, request))
 }
 
-// followUp asks Codex the request in the conversation, which it answers
-// with the conversation's earlier requests in mind.
+// followUp asks the conversation's agent the request in it, which it
+// answers with the conversation's earlier requests in mind.
 func (a *app) followUp(conv *conversation, request string) {
 	if a.codexRunning() || a.changing() || strings.TrimSpace(request) == "" {
 		return
@@ -67,9 +67,9 @@ func (a *app) followUp(conv *conversation, request string) {
 	a.runAnswer(conv)
 }
 
-// runAnswer has Codex answer the last request of the conversation: in
-// its session where it has one, else about the changes of the entry
-// shown.
+// runAnswer has the conversation's agent answer the last request of
+// the conversation: in its session where it has one, else about the
+// changes of the entry shown.
 func (a *app) runAnswer(conv *conversation) {
 	cm, _, _ := a.answerable()
 	snapshot := a.reviewSource
@@ -78,8 +78,10 @@ func (a *app) runAnswer(conv *conversation) {
 	}
 	i := len(conv.Turns) - 1
 	request, session := conv.Turns[i].Request, conv.Session
+	def := conv.agent()
+	ask := def.ask
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	a.answer = answerState{codexTask: codexTask{running: true, cancel: cancel, phase: "Starting…", detail: "Starting Codex"},
+	a.answer = answerState{codexTask: codexTask{running: true, cancel: cancel, phase: "Starting…", detail: "Starting " + def.name},
 		conv: conv, turn: i}
 	current := func() bool { return a.answer.conv == conv && a.answer.turn == i }
 	progress := a.codexProgress(ctx, &a.answer.codexTask, current)
@@ -93,7 +95,7 @@ func (a *app) runAnswer(conv *conversation) {
 			snapshot, err = review.CommitSnapshot(repo, cm.Hash)
 		}
 		if err == nil {
-			text, session, err = review.Ask(ctx, repo, session, snapshot, request, progress, delta)
+			text, session, err = ask(ctx, repo, session, snapshot, request, progress, delta)
 		}
 		return func() {
 			e := &a.answer

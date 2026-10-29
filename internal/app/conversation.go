@@ -14,17 +14,23 @@ import (
 	"github.com/egoist/mygo/ui/markdown"
 )
 
-// conversation is one with Codex about the repository's changes, as
-// Xcode's coding assistant keeps them: the requests and what Codex
-// answered, Codex keeping the conversation itself, by session, for the
-// requests that follow up.
+// conversation is one with an agent about the repository's changes, as
+// Xcode's coding assistant keeps them: the requests and what the agent
+// answered, the agent keeping the conversation itself, by session, for
+// the requests that follow up.
 type conversation struct {
 	ID      string    `json:"id"`
 	Title   string    `json:"title"`
 	Created time.Time `json:"created"`
 	Scope   string    `json:"scope"`
+	Agent   string    `json:"agent,omitempty"` // the agent that keeps it, Codex's for none
 	Session string    `json:"session,omitempty"`
 	Turns   []*turn   `json:"turns"`
+}
+
+// agent is the agent that keeps the conversation, whose session is its.
+func (c *conversation) agent() agentDef {
+	return agentDefOf(parseAgent(c.Agent))
 }
 
 // turn is a request of a conversation and Codex's answer to it: in
@@ -58,6 +64,7 @@ func (a *app) newConversation(title, scope, request string) *conversation {
 		a.conversations = append([]*conversation{conv}, a.conversations...)
 	}
 	conv.Title, conv.Created, conv.Scope, conv.Turns = title, time.Now(), scope, []*turn{{Request: request}}
+	conv.Agent = string(a.agentKind())
 	a.showConversation(conv)
 	a.saveConversations()
 	return conv

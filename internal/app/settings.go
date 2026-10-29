@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"peek/internal/codex"
+	"peek/internal/pi"
 	"peek/internal/review"
 
 	"github.com/egoist/mygo"
@@ -245,6 +246,7 @@ type settingsWindow struct {
 	fonts           []string
 	login, wasLogin bool
 	codex           string  // where the Codex CLI is, "" for nowhere
+	piExe           string  // where the Pi CLI is, "" for nowhere
 	body            float32 // the pane's height, as laid out last
 	height          int     // the content's, as the window was given it
 }
@@ -322,6 +324,7 @@ func (p *projects) showSettings() {
 	w.login = mygo.App.OpenAtLogin()
 	w.wasLogin = w.login
 	w.codex, _ = codex.Executable()
+	w.piExe, _ = pi.Executable()
 	p.settings = w
 	w.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:             settingsTabs[w.tab].name,
@@ -574,9 +577,17 @@ func (p *projects) intelligenceSettings(c *ui.Context) {
 		ui.Text(c, w.codex).Selectable()
 	}).Description("Install Codex and sign in with codex login to ask, review and ship.")
 	settingsSection(c)
+	settingsField(c, "Pi CLI", func() {
+		if w.piExe == "" {
+			ui.Text(c, "Not found").TextColor(t.TextMuted)
+			return
+		}
+		ui.Text(c, w.piExe).Selectable()
+	}).Description("Install the Pi coding agent for the other choice beside Ship: ask, review and ship with it.")
+	settingsSection(c)
 	settingsField(c, "Commit Messages", func() {
 		ui.NativeTextField(c.Key("commitModel"), &s.CommitModel, codex.CommitModel).Width(220)
-	}).Description("The model Ship writes commit messages with. Reviews and conversations use your Codex settings.")
+	}).Description("The model Ship's chosen agent writes commit messages with: a Codex or a Pi model, or empty for the agent's own. Reviews and conversations use the agent's settings.")
 	settingsSection(c)
 	settingsField(c, "Reviews", func() {
 		ui.NativePopUpButton(c.Key("reviews"), &w.reviews, reviewChoices).Width(220)

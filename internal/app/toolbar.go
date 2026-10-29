@@ -43,7 +43,7 @@ func (a *app) toolbarSpec(c *ui.Context) *mygo.Toolbar {
 	agent := agentDefOf(a.agentKind())
 	next := agentCodex
 	if agent.kind == agentCodex {
-		next = agentGrok
+		next = agentPi
 	}
 	// The sidebar's button at its end, by the line, where it stays as the
 	// sidebar slides and in full screen, without the window's buttons, as
@@ -59,7 +59,7 @@ func (a *app) toolbarSpec(c *ui.Context) *mygo.Toolbar {
 		{ID: "sidebar-start", Kind: mygo.ToolbarFlexibleSpace},
 		{ID: "navigator", Kind: mygo.ToolbarSegmented, Segments: []string{"Files", "Conversations"},
 			SegmentSymbols: []string{"list.bullet", "bubble.left.and.text.bubble.right"}, Selected: navigator, Label: "Navigator",
-			ToolTip: "Show the files or the conversations with Codex, or hide the sidebar", Select: a.chooseNavigator},
+			ToolTip: "Show the files or the conversations with the agent, or hide the sidebar", Select: a.chooseNavigator},
 	}
 	items = append(items,
 		mygo.ToolbarItem{ID: "sidebar-separator", Kind: mygo.ToolbarSeparator, Divider: 0},

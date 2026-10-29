@@ -30,7 +30,7 @@ type projects struct {
 	// under their names (group.go).
 	folded []string
 	dir    string       // where recent and the projects open are kept, "" for nowhere
-	agent  agentKind    // the agent Ship uses
+	agent  agentKind    // the agent the conversations and Ship use
 	inline bool         // no windows, the apps' loads on the UI thread, for tests
 	menu   *menuItems   // the menu bar's items that follow the project, nil in tests
 	win    *mygo.Window // the window, which shows the project shown; nil while closed and in tests

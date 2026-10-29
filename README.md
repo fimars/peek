@@ -2,19 +2,19 @@
 
 A native git diff viewer for macOS, built in Go with [MyGo](https://github.com/egoist/mygo).
 
-Browse uncommitted changes, compare a branch, or read any commit's files. Follow definitions in the working tree, ask Codex about the code, and commit and push from the same window. Peek refreshes as repositories change and remembers where you left each one.
+Browse uncommitted changes, compare a branch, or read any commit's files. Follow definitions in the working tree, ask an agent about the code, and commit and push from the same window. Peek refreshes as repositories change and remembers where you left each one.
 
 ## About this fork
 
 This is [fimars/peek](https://github.com/fimars/peek), a fork of
 [hyoban/peek](https://github.com/hyoban/peek) kept for one reason: work
-runs on GitLab and Grok Build. The fork links references, branches and
+runs on GitLab and Pi. The fork links references, branches and
 repository pages to whatever code host a repository is on — GitLab's too,
-with its mark beside its repositories — and lets **Ship** and **Review**
-write with either Codex or Grok Build, chosen beside the **Ship** button.
-Everything else follows upstream, merged in as it releases. Upstream's
-install command below installs the original Peek; this fork builds from
-source.
+with its mark beside its repositories — and lets **Ship**, **Review** and
+the conversations work with either Codex or Pi, chosen beside the
+**Ship** button. Everything else follows upstream, merged in as it
+releases. Upstream's install command below installs the original Peek;
+this fork builds from source.
 
 ## Changes
 
@@ -102,7 +102,7 @@ Optional tools enable additional features:
 | Tool | Used for |
 | --- | --- |
 | Codex CLI, signed in with `codex login` | Conversations, reviews, explanations and commit messages |
-| Grok Build CLI (`grok`), signed in with `grok login` | Commit messages and reviews, as the chosen agent |
+| [Pi](https://github.com/earendil-works/pi) coding agent CLI, signed in | Commit messages, reviews and conversations, as the chosen agent |
 | [GitHub CLI](https://cli.github.com), authenticated for the repository | Checking out pull requests by number or URL |
 | Local language servers | [Go to definition](#go-to-definition) in Go, TypeScript and Kotlin |
 
@@ -121,9 +121,9 @@ Optional tools enable additional features:
 ### Discuss and ship
 
 - Select line numbers to copy code references or links on the code host. Add comments from the gutter and copy them as an agent prompt.
-- **Ask Codex** about the selected changes, starting from Explain, Review, Summarize or Suggest Tests, or your own question. Conversations are saved per repository and support follow-up questions.
+- **Ask** the chosen agent — Codex or Pi — about the selected changes, starting from Explain, Review, Summarize or Suggest Tests, or your own question. Conversations are saved per repository and support follow-up questions.
 - Review findings appear under the relevant diff lines, with the full result in the conversation.
-- **Ship** stages all changes, asks the chosen agent — Codex or Grok Build — for a commit message following the repository's style, commits and pushes.
+- **Ship** stages all changes, asks the chosen agent — Codex or Pi — for a commit message following the repository's style, commits and pushes.
 - Switch branches or check out a pull request from the branch name in the toolbar.
 - Browse author and co-author avatars, commit details, linked issue and pull request references, and the repository's page on its host.
 
@@ -159,7 +159,7 @@ Optional tools enable additional features:
 | <kbd>⌘</kbd> <kbd>B</kbd> | Switch branch or check out a pull request |
 | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>P</kbd> | Pull |
 | <kbd>⌘</kbd> <kbd>P</kbd> | Ship |
-| <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>A</kbd> | New Codex conversation |
+| <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>A</kbd> | New conversation |
 | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>R</kbd> | Review changes |
 | <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>E</kbd> | Explain changes |
 | <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>R</kbd> | Show the repository in Finder |
@@ -207,19 +207,23 @@ project closes.
 
 ### Choose the agent
 
-Codex is the default for Ship. Click the icon left of **Ship** in the history's
-toolbar and choose **Grok Build** to write commit messages with Grok Build, or
-**Codex** to go back. The choice is kept in the `agent` file of Peek's config
-folder, applies to every repository, and survives a restart. Ship and Review
-use the chosen agent's login and settings. Codex also answers in the
-conversations, so it needs to be installed either way.
+Codex is the default. Click the icon left of **Ship** in the history's
+toolbar and choose **Pi** to work with the [Pi](https://github.com/earendil-works/pi)
+coding agent, or **Codex** to go back. The choice is kept in the `agent`
+file of Peek's config folder, applies to every repository, and survives a
+restart. Ship, Review and the conversations use the chosen agent, with its
+login and settings. A conversation stays with the agent that started it,
+whose session is its.
 
-Codex needs the Codex CLI and `codex login`. Grok Build needs the `grok` CLI and
-`grok login`.
+Codex needs the Codex CLI and `codex login`. Pi needs the `pi` CLI, signed
+into a provider. Peek runs each in a read-only sandbox over the repository.
+When the agent is Pi, the model **Settings → Intelligence** names is one of
+Pi's — `pi --list-models` lists them — or empty for Pi's own.
 
-### Ask Codex
+### Ask
 
-Click **Ask Codex** in the toolbar to enter a question. The **Shortcuts** menu
+Click **Ask** in the toolbar to enter a question, answered by the agent
+chosen beside **Ship**. The **Shortcuts** menu
 offers **Explain**, **Review**, **Summarize** and **Suggest Tests**; choose one
 and edit its request before sending. The scope shown beside Send tells you
 which changes the request concerns. Return sends the request; Shift-Return
@@ -233,13 +237,13 @@ across launches.
 
 Questions and explanations use the selected history entry: uncommitted
 changes, a commit, or the branch comparison. **Repository → Explain Changes**
-(⇧⌘E) starts an explanation directly. Codex reads the diffs and surrounding
-code in a read-only sandbox using your existing login and settings. The toolbar
+(⇧⌘E) starts an explanation directly. The agent reads the diffs and surrounding
+code in a read-only sandbox using its login and settings. The toolbar
 shows progress and lets you stop the current request.
 
 ### Review changes
 
-Choose the **Review** template in Ask Codex, or use **Repository → Review
+Choose the **Review** template in Ask, or use **Repository → Review
 Changes** (⇧⌘R). When the branch comparison is selected, Peek reviews that
 comparison. Otherwise it reviews staged, unstaged and untracked changes;
 with a clean working tree, it reviews commits not yet pushed to the configured
@@ -251,7 +255,7 @@ The result appears in the conversation, and the toolbar shows **Passed**,
 findings alone still pass; **Settings → Intelligence** changes where it fails. Findings also appear beside the affected diff lines.
 You can copy the result or ask follow-up questions in the conversation.
 
-Review runs with the agent chosen beside **Ship**, Codex or Grok Build, in a
+Review runs with the agent chosen beside **Ship**, Codex or Pi, in a
 read-only sandbox with its login and settings. Peek supplies the repository,
 review scope and fixed commit IDs; the agent reads the Git diffs and relevant
 files itself.
@@ -269,7 +273,7 @@ cannot run at the same time.
 
 Click **Ship** in the toolbar (⌘P) to stage all changes, including untracked
 files that Git does not ignore, write a commit message with the agent chosen
-beside the button — Codex or Grok Build — commit and push. Peek supplies the
+beside the button — Codex or Pi — commit and push. Peek supplies the
 staged diff and recent commit subjects, grouped code first, then tests, docs,
 and last lockfiles and generated files, each file's diff capped, so the message
 follows the repository's style; a change too large to embed whole comes with a
@@ -277,8 +281,8 @@ summary of every file, leaving the agent to read more of the fixed staged tree
 in a read-only sandbox only if it must. Codex writes it with a small, fast
 model and low reasoning, apart from your Codex config, whose model
 **Settings → Intelligence** can change; reviews and conversations use your
-Codex settings. Grok Build uses your configured model and login, at max
-reasoning.
+Codex settings. Pi writes it with the model chosen in **Settings →
+Intelligence** or its own, at low reasoning.
 
 Before committing, Peek verifies that the branch, HEAD and staged tree have
 not changed. It fetches the remote before committing and pushing. If the remote

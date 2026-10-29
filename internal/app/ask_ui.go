@@ -167,8 +167,8 @@ func (a *app) draft() *conversation {
 	return nil
 }
 
-// canSend reports whether the field's request can go to Codex now, in
-// the conversation.
+// canSend reports whether the field's request can go to the agent now,
+// in the conversation.
 func (a *app) canSend(conv *conversation) bool {
 	if len(conv.Turns) == 0 {
 		return a.canStart(&a.compose, a.reply)
@@ -176,8 +176,8 @@ func (a *app) canSend(conv *conversation) bool {
 	return strings.TrimSpace(a.reply) != "" && !a.codexRunning() && !a.changing()
 }
 
-// send sends the field's request to Codex: one starting the conversation,
-// or following up in it. The field empties for the next.
+// send sends the field's request to the agent: one starting the
+// conversation, or following up in it. The field empties for the next.
 func (a *app) send(conv *conversation) {
 	if !a.canSend(conv) {
 		return
@@ -191,17 +191,26 @@ func (a *app) send(conv *conversation) {
 	a.start(&s, text)
 }
 
-// codexTool is the toolbar's button of Codex: the request under way,
-// which it stops, or the button opening the popover, titled with the
-// verdict of the review where it came last.
+// codexTool is the toolbar's button of the agent: the request under
+// way, which it stops, or the button opening the popover, titled with
+// the verdict of the review where it came last.
 func (a *app) codexTool(c *ui.Context) toolButton {
 	if a.review.running {
-		return a.review.activity(c, "Reviewing…", "Codex is reviewing the changes", "Stop Review")
+		name := "Codex"
+		if a.review.conv != nil {
+			name = a.review.conv.agent().name
+		}
+		return a.review.activity(c, "Reviewing…", name+" is reviewing the changes", "Stop Review")
 	}
 	if a.answer.running {
-		return a.answer.activity(c, "Thinking…", "Codex is answering", "Stop Codex")
+		name := "Codex"
+		if a.answer.conv != nil {
+			name = a.answer.conv.agent().name
+		}
+		return a.answer.activity(c, "Thinking…", name+" is answering", "Stop "+name)
 	}
-	b := toolButton{tooltip: "New conversation with Codex", click: func() {
+	name := agentDefOf(a.agentKind()).name
+	b := toolButton{tooltip: "New conversation with " + name, click: func() {
 		if a.ask.open {
 			a.ask.open = false
 			return
@@ -219,7 +228,7 @@ func (a *app) codexTool(c *ui.Context) toolButton {
 	return b
 }
 
-// codexButton is the toolbar's button of Codex in the view, where
+// codexButton is the toolbar's button of the agent in the view, where
 // AppKit's toolbar does not show.
 func (a *app) codexButton(c *ui.Context) {
 	b := a.codexTool(c)
@@ -229,9 +238,9 @@ func (a *app) codexButton(c *ui.Context) {
 	}
 	label := b.label
 	if label == "" {
-		label = "Ask Codex"
+		label = "Ask " + agentDefOf(a.agentKind()).name
 	}
-	ui.Button(c.Key("codex"), label).Shrink(0).Label("Ask Codex").Tooltip(b.tooltip).Bind(&a.ask.button).OnClick(b.click)
+	ui.Button(c.Key("codex"), label).Shrink(0).Label("Ask " + agentDefOf(a.agentKind()).name).Tooltip(b.tooltip).Bind(&a.ask.button).OnClick(b.click)
 }
 
 // askWidth is the width of the popover's content.
@@ -278,7 +287,7 @@ func (a *app) askPanel(c *ui.Context) {
 	s := &a.ask
 	ui.Column(c).Width(askWidth).Gap(t.Space(2)).Padding(t.Space(1)).Children(func() {
 		field := ui.TextAreaBase(c.Key("ask-request"), &s.text).Bind(&s.field).FillWidth().MinHeight(64).MaxHeight(200).
-			FontSize(fontSize + 2).Placeholder("New conversation with Codex").Label("Request")
+			FontSize(fontSize + 2).Placeholder("New conversation with " + agentDefOf(a.agentKind()).name).Label("Request")
 		field.OnTextKey(func(k ui.TextKey) bool {
 			if k.Key != ui.KeyEnter || k.Mods != 0 {
 				return false // Shift-Return breaks the line

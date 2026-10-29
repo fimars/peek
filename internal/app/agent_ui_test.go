@@ -24,7 +24,7 @@ func TestParseAgent(t *testing.T) {
 		value string
 		want  agentKind
 	}{
-		{"grok", agentGrok}, {"codex", agentCodex}, {"", agentCodex}, {"other", agentCodex},
+		{"pi", agentPi}, {"codex", agentCodex}, {"", agentCodex}, {"other", agentCodex},
 	} {
 		if got := parseAgent(tc.value); got != tc.want {
 			t.Errorf("parseAgent(%q) = %q, want %q", tc.value, got, tc.want)
@@ -38,19 +38,19 @@ func TestAgentMenu(t *testing.T) {
 	if err := tt.Click("Ship with Codex"); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := tt.Menu(), []string{"Codex", "Grok Build"}; !slices.Equal(got, want) {
+	if got, want := tt.Menu(), []string{"Codex", "Pi"}; !slices.Equal(got, want) {
 		t.Fatalf("menu %q, want %q", got, want)
 	}
-	if err := tt.ChooseMenuItem("Grok Build"); err != nil {
+	if err := tt.ChooseMenuItem("Pi"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if a.agentKind() != agentGrok || !tt.HasText("Ship with Grok Build") {
+	if a.agentKind() != agentPi || !tt.HasText("Ship with Pi") {
 		t.Fatalf("agent %q, texts %q", a.agentKind(), tt.Texts())
 	}
 	a.push = pushState{running: true}
 	tt.Frame()
-	if err := tt.Click("Ship with Grok Build"); err != nil {
+	if err := tt.Click("Ship with Pi"); err != nil {
 		t.Fatal(err)
 	}
 	if got := tt.Menu(); len(got) != 0 {
@@ -71,34 +71,34 @@ func TestAgentChoicePersists(t *testing.T) {
 			t.Fatalf("%q gave %q, want Codex", content, got)
 		}
 	}
-	p.setAgent(agentGrok)
-	if p.agent != agentGrok {
-		t.Fatalf("agent %q, want Grok Build", p.agent)
+	p.setAgent(agentPi)
+	if p.agent != agentPi {
+		t.Fatalf("agent %q, want Pi", p.agent)
 	}
-	if data, err := os.ReadFile(filepath.Join(p.dir, agentFile)); err != nil || string(data) != "grok\n" {
-		t.Fatalf("agent file %q, %v; want %q", data, err, "grok\n")
+	if data, err := os.ReadFile(filepath.Join(p.dir, agentFile)); err != nil || string(data) != "pi\n" {
+		t.Fatalf("agent file %q, %v; want %q", data, err, "pi\n")
 	}
-	if got := (&projects{dir: p.dir}).readAgent(); got != agentGrok {
-		t.Fatalf("a new projects value read %q, want Grok Build", got)
+	if got := (&projects{dir: p.dir}).readAgent(); got != agentPi {
+		t.Fatalf("a new projects value read %q, want Pi", got)
 	}
 }
 
 func TestAgentShipFlow(t *testing.T) {
 	repo, remote := testutil.RemoteRepo(t)
-	testutil.FakeGrok(t, `{"changes":["Update the files"],"subject":"Update the files"}`)
+	testutil.FakePi(t, `{"changes":["Update the files"],"theme":"","subject":"Update the files"}`)
 	prompt := filepath.Join(t.TempDir(), "prompt")
-	t.Setenv("PEEK_TEST_GROK_PROMPT", prompt)
+	t.Setenv("PEEK_TEST_PI_PROMPT", prompt)
 	a, tt := testApp(t, repo, nil)
 	settle(tt)
 	if err := tt.Click("Ship with Codex"); err != nil {
 		t.Fatal(err)
 	}
-	if err := tt.ChooseMenuItem("Grok Build"); err != nil {
+	if err := tt.ChooseMenuItem("Pi"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if a.agentKind() != agentGrok {
-		t.Fatalf("agent %q, want Grok Build", a.agentKind())
+	if a.agentKind() != agentPi {
+		t.Fatalf("agent %q, want Pi", a.agentKind())
 	}
 	if err := tt.Click("Ship"); err != nil {
 		t.Fatal(err)

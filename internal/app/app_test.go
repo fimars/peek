@@ -340,10 +340,10 @@ func TestNativeToolbarShowsTheAgentAndHost(t *testing.T) {
 	}
 	a.toggleAgent()
 	tt.Frame()
-	if got := item("agent").Title; got != "Grok Build" {
-		t.Fatalf("agent %q, want Grok Build", got)
+	if got := item("agent").Title; got != "Pi" {
+		t.Fatalf("agent %q, want Pi", got)
 	}
-	if got := item("agent").ToolTip; !strings.Contains(got, "Ship with Grok Build") {
+	if got := item("agent").ToolTip; !strings.Contains(got, "Ship with Pi") {
 		t.Fatalf("agent tooltip %q", got)
 	}
 }
