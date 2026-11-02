@@ -465,7 +465,7 @@ type menuItems struct {
 	find                                      *menuItem
 	definition, back, forward                 *menuItem
 	refresh, pull, ship, ask, review, explain *menuItem
-	branch                                    *menuItem
+	branch, discard                           *menuItem
 	web, finder                               *menuItem
 	add                                       *menuItem
 }
@@ -575,9 +575,10 @@ func (p *projects) setMenu() {
 			a.openSwitcher()
 			a.switcher.focus = true
 		}),
-		web:    item("Open on GitHub", "", func(a *app) { mygo.Shell.OpenExternal(a.webPage()) }),
-		finder: item("Show in Finder", "Alt+Cmd+R", func(a *app) { mygo.Shell.ShowItemInFolder(a.repo) }),
-		add:    item("Add Folder…", "Shift+Cmd+O", func(*app) { p.chooseToAdd() }),
+		discard: item("Discard All Changes…", "", func(a *app) { a.confirmDiscard(a.diffs) }),
+		web:     item("Open on GitHub", "", func(a *app) { mygo.Shell.OpenExternal(a.webPage()) }),
+		finder:  item("Show in Finder", "Alt+Cmd+R", func(a *app) { mygo.Shell.ShowItemInFolder(a.repo) }),
+		add:     item("Add Folder…", "Shift+Cmd+O", func(*app) { p.chooseToAdd() }),
 	}
 	p.menu = m
 	edit := []*mygo.MenuItem{
@@ -636,6 +637,8 @@ func (p *projects) setMenu() {
 			mygo.Separator(),
 			m.pull.MenuItem, m.ship.MenuItem,
 			mygo.Separator(),
+			m.discard.MenuItem,
+			mygo.Separator(),
 			m.ask.MenuItem, m.review.MenuItem, m.explain.MenuItem,
 			mygo.Separator(),
 			m.branch.MenuItem,
@@ -660,7 +663,7 @@ func (p *projects) syncMenu() {
 	}
 	if a == nil {
 		for _, item := range []*menuItem{m.changes, m.files, m.sidebar, m.history, m.terminal, m.viewed, m.find, m.layout, m.nextChange, m.previousChange,
-			m.refresh, m.pull, m.ship, m.ask, m.review, m.explain, m.branch, m.web, m.finder, m.definition, m.back, m.forward, m.add} {
+			m.refresh, m.pull, m.ship, m.discard, m.ask, m.review, m.explain, m.branch, m.web, m.finder, m.definition, m.back, m.forward, m.add} {
 			item.show(item.shownLabel, false, item.shownChecked)
 		}
 		return
@@ -712,6 +715,7 @@ func (p *projects) syncMenu() {
 	}
 	_, answerable, _ := a.answerable()
 	m.explain.show(explain, a.answer.running || answerable != "" && !busy && !a.review.running, false)
+	m.discard.show("Discard All Changes…", a.discardable(), false)
 	m.ask.show("New Conversation", true, false)
 	m.branch.show("Switch Branch…", a.branch != "" && !busy, false)
 	if a.host.None() {

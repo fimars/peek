@@ -28,11 +28,34 @@ func TestSwitcherUI(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	for _, want := range []string{"Branches", "feature", "Pull Requests", "#7 Add the switcher"} {
+	for _, want := range []string{"Branches", "feature", "Pull Requests"} {
 		if !tt.HasText(want) {
 			t.Fatalf("no %q in %q", want, tt.Texts())
 		}
 	}
+	// The pull requests list in a tab of their own, which the switcher
+	// keeps.
+	if tt.HasText("#7 Add the switcher") {
+		t.Fatal("pull requests listed among the branches")
+	}
+	if err := tt.Click("Pull Requests"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("#7 Add the switcher") || tt.HasText("feature") {
+		t.Fatalf("pull requests' tab shows %q", tt.Texts())
+	}
+	a.switcher.open = false
+	tt.Frame()
+	a.openSwitcher()
+	tt.Frame()
+	if !tt.HasText("#7 Add the switcher") {
+		t.Fatalf("tab not kept: %q", tt.Texts())
+	}
+	if err := tt.Click("Branches"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 	if err := tt.Click("feature"); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +112,7 @@ func TestSwitcherUI(t *testing.T) {
 		t.Fatalf("branch %q, switcher %+v", a.branch, a.switcher)
 	}
 	data, _ := os.ReadFile(log)
-	if !strings.Contains(string(data), "pr list --repo hyoban/peek") || !strings.Contains(string(data), "pr checkout 7 --repo hyoban/peek") {
+	if !strings.Contains(string(data), "pr list --repo hyoban/peek --state open --limit 50 --search sort:updated-desc") || !strings.Contains(string(data), "pr checkout 7 --repo hyoban/peek") {
 		t.Fatalf("gh was asked %q", data)
 	}
 
@@ -145,6 +168,39 @@ func TestSwitcherOpensWorktree(t *testing.T) {
 	}
 	settle(tt)
 	if !git.SamePath(p.cur.repo, other) || p.cur.branch != "elsewhere" || git.CurrentBranch(repo) != "main" {
+		t.Fatalf("showing %q on %q; repo on %q", p.cur.repo, p.cur.branch, git.CurrentBranch(repo))
+	}
+}
+
+// A pull request whose branch another work tree has checked out opens
+// there, as gh would fail to check it out here.
+func TestSwitcherOpensPullRequestWorktree(t *testing.T) {
+	repo, _ := testutil.RemoteRepo(t)
+	testutil.Git(t, repo, "remote", "set-url", "origin", "https://github.com/hyoban/peek.git")
+	testutil.FakeGH(t, "https://github.com/hyoban/peek")
+	other := filepath.Join(t.TempDir(), "other")
+	testutil.Git(t, repo, "worktree", "add", "-q", "-b", "switcher", other)
+
+	p := &projects{apps: map[string]*app{}, inline: true}
+	p.open(repo)
+	tt := ui.NewTester(p.view, 1200, 800)
+	settle(tt)
+	if err := tt.Click("Switch Branch"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("Pull Requests"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("Worktree") {
+		t.Fatalf("no worktree mark in %q", tt.Texts())
+	}
+	if err := tt.Click("#7 Add the switcher"); err != nil {
+		t.Fatal(err)
+	}
+	settle(tt)
+	if !git.SamePath(p.cur.repo, other) || p.cur.branch != "switcher" || git.CurrentBranch(repo) != "main" {
 		t.Fatalf("showing %q on %q; repo on %q", p.cur.repo, p.cur.branch, git.CurrentBranch(repo))
 	}
 }
@@ -221,5 +277,37 @@ func TestGitHubButtonOpensPullRequest(t *testing.T) {
 	settle(tt)
 	if got, want := a.webPage(), "https://github.com/hyoban/peek"; got != want {
 		t.Fatalf("main's page %q, want %q", got, want)
+	}
+}
+
+// The switcher is as tall loading as loaded, and on either tab, at the
+// height its popover opens at: it never jumps as the lists come.
+func TestSwitcherKeepsItsHeight(t *testing.T) {
+	repo, _ := testutil.RemoteRepo(t)
+	testutil.Git(t, repo, "remote", "set-url", "origin", "https://github.com/hyoban/peek.git")
+	testutil.FakeGH(t, "https://github.com/hyoban/peek")
+	a, _ := testApp(t, repo, nil)
+	height := func() int {
+		var h ui.Handle
+		var got float32
+		tt := ui.NewTester(func(c *ui.Context) {
+			a.themed(c)
+			a.childTheme(c)
+			ui.Column(c).Bind(&h).Padding(popoverPadding).Children(func() { a.switcherPanel(c) })
+			if e := c.Resolve(h); e.Valid() {
+				got = e.Bounds().H
+			}
+		}, 600, 900)
+		tt.Frame()
+		tt.Frame()
+		return int(got + 0.5)
+	}
+	loading := height()
+	a.openSwitcher()
+	loaded := height()
+	a.switcher.tab = switchPulls
+	pulls := height()
+	if loading != a.switcherHeight() || loaded != loading || pulls != loading {
+		t.Fatalf("heights %d loading, %d loaded, %d of the pull requests; opens at %d", loading, loaded, pulls, a.switcherHeight())
 	}
 }

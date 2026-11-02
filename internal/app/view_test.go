@@ -282,10 +282,10 @@ func TestReadDiffs(t *testing.T) {
 	}
 	tt.ClickAt(box.X+box.W/2, name.Y+name.H/2)
 	settle(tt)
-	if docs.read || docs.opened {
-		t.Errorf("after its Viewed box new.md read %v, opened %v; want neither", docs.read, docs.opened)
+	if docs.read || docs.flipped {
+		t.Errorf("after its Viewed box new.md read %v, flipped %v; want neither", docs.read, docs.flipped)
 	}
-	docs.opened = true
+	docs.flipped = true
 	a.setRead(docs, true)
 	if !docs.folded() {
 		t.Error("marking new.md viewed again did not fold it")
@@ -296,6 +296,26 @@ func TestReadDiffs(t *testing.T) {
 	settle(tt)
 	if a.file != "docs/new.md" || !docs.read || docs.folded() {
 		t.Errorf("after choosing new.md in the tree, file %q, read %v, folded %v; want it read and shown", a.file, docs.read, docs.folded())
+	}
+
+	// A click on the bar of a file not read folds it too, still not read,
+	// and choosing it in the tree shows it again.
+	code := a.diffs[0]
+	a.scrollToFile("main.go")
+	settle(tt)
+	box, ok = tt.Find("Viewed") // main.go's, at the top
+	if !ok {
+		t.Fatal("no Viewed box")
+	}
+	tt.ClickAt(box.X-120, box.Y+box.H/2)
+	settle(tt)
+	if code.read || !code.folded() {
+		t.Errorf("after a click on its bar main.go read %v, folded %v; want folded and not read", code.read, code.folded())
+	}
+	a.changeTree.show("main.go")
+	settle(tt)
+	if code.read || code.folded() {
+		t.Errorf("after choosing main.go in the tree, read %v, folded %v; want it shown", code.read, code.folded())
 	}
 
 	// The marks stay with the commit while another shows.
@@ -333,7 +353,7 @@ func TestReadByGroup(t *testing.T) {
 	if err := tt.RightClick("Docs"); err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprint(tt.Menu()); got != "[Mark as Viewed Mark as Not Viewed]" {
+	if got := fmt.Sprint(tt.Menu()); got != "[Mark as Viewed Mark as Not Viewed - Discard Changes…]" {
 		t.Errorf("menu %s", got)
 	}
 	if err := tt.ChooseMenuItem("Mark as Not Viewed"); err != nil {

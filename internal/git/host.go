@@ -114,17 +114,23 @@ func CodeHost(repo string) Host {
 // CurrentBranchURL returns the page of the branch checked out, on the
 // remote it tracks, "" where it tracks none, as a branch never pushed or
 // a detached HEAD. The remote's default branch has the repository's own
-// page.
+// page. A remote may be named by its URL, as gh pr checkout tracks a
+// fork's branch, which git then tells no upstream of.
 func CurrentBranchURL(repo string) string {
-	head, err := git(repo, "symbolic-ref", "--quiet", "HEAD")
+	head, err := git(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return ""
 	}
-	out, err := git(repo, "for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)", strings.TrimSpace(head))
-	remote, ref, _ := strings.Cut(strings.TrimSpace(out), "\x00")
-	branch, ok := strings.CutPrefix(ref, "refs/heads/")
-	if err != nil || remote == "" || !ok {
+	name := strings.TrimSpace(head)
+	remote, _ := git(repo, "config", "--get", "branch."+name+".remote")
+	ref, _ := git(repo, "config", "--get", "branch."+name+".merge")
+	remote = strings.TrimSpace(remote)
+	branch, ok := strings.CutPrefix(strings.TrimSpace(ref), "refs/heads/")
+	if remote == "" || remote == "." || !ok {
 		return ""
+	}
+	if host := hostOf(remote); !host.None() {
+		return host.BranchURL(branch)
 	}
 	url, err := git(repo, "config", "--get", "remote."+remote+".url")
 	host := hostOf(strings.TrimSpace(url))

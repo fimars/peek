@@ -70,12 +70,23 @@ func (a *app) startPull() {
 }
 
 // fetchIfDue fetches the remote where the interval the user chose has
-// passed since it last did, as the user and the network allow.
+// passed since it last did, as the user and the network allow, and reads
+// the branch's pull request again while its checks run or GitHub works
+// out whether it merges.
 func (a *app) fetchIfDue() {
-	if a.closed || time.Since(a.fetchedAt) < a.projects.fetchEvery() || !a.projects.fetchAllowed() {
+	if a.closed || !a.projects.fetchAllowed() {
 		return
 	}
-	a.fetchRemote()
+	if pr := a.pullReq; pr != nil && pr.State == "OPEN" {
+		// While GitHub works out whether it merges too.
+		s, ok := pr.ChecksState()
+		if ok && s == git.CheckPending || pr.Mergeable == "UNKNOWN" || pr.MergeState == "UNKNOWN" {
+			a.readPullRequest(true)
+		}
+	}
+	if time.Since(a.fetchedAt) >= a.projects.fetchEvery() {
+		a.fetchRemote()
+	}
 }
 
 // fetchRemote fetches the remote the branch tracks, unless git is busy
@@ -94,7 +105,7 @@ func (a *app) fetchRemote() {
 		moved, _ := git.FetchUpstream(ctx, repo)
 		return func() {
 			a.pull.fetching = false
-			a.readPullURL(true) // a pull request opened since
+			a.readPullRequest(true) // a pull request opened since
 			if moved {
 				a.refresh()
 			}
@@ -105,39 +116,48 @@ func (a *app) fetchRemote() {
 // webPage is the page the toolbar button and Repository menu open: the
 // branch's pull request, else the branch's page, else the repository's.
 func (a *app) webPage() string {
-	if a.pullURLFor == a.branchURL {
-		return cmp.Or(a.pullURL, a.branchURL, a.host.Page)
+	if pr := a.pullReq; pr != nil && a.pullFor == a.branchURL {
+		return cmp.Or(pr.URL, a.branchURL, a.host.Page)
 	}
 	return cmp.Or(a.branchURL, a.host.Page)
 }
 
-// readPullURL asks gh for the branch's pull request where the branch
+// readPullRequest asks gh for the branch's pull request where the branch
 // moved to another page since, or always with again. Only a branch of
-// its own on GitHub, not the default one, has one.
-func (a *app) readPullURL(again bool) {
+// its own on GitHub, not the default one, has one. What gh cannot tell,
+// as offline, leaves the pull request as last read.
+func (a *app) readPullRequest(again bool) {
 	page := a.branchURL
-	if page == a.pullURLFor && !again {
+	if page == a.pullFor && !again {
 		return
 	}
 	if a.host.Kind != git.KindGitHub {
-		a.pullURL, a.pullURLFor = "", page
+		a.pullReq, a.pullFor = nil, page
 		return
 	}
 	if !strings.Contains(page, "/tree/") {
-		a.pullURL, a.pullURLFor = "", page
+		a.pullReq, a.pullFor = nil, page
 		return
 	}
-	if page != a.pullURLFor {
-		a.pullURL, a.pullURLFor = "", page
+	if page != a.pullFor {
+		a.pullReq, a.pullFor = nil, page
 	}
+	if a.pullReading {
+		return
+	}
+	a.pullReading = true
 	repo := a.repo
 	a.background(func() func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		url := git.BranchPullRequestURL(ctx, repo)
+		pr, err := git.BranchPullRequest(ctx, repo)
 		return func() {
-			if a.branchURL == page {
-				a.pullURL, a.pullURLFor = url, page
+			a.pullReading = false
+			switch {
+			case a.branchURL != page:
+				a.readPullRequest(true) // the branch's now, which waited
+			case err == nil:
+				a.pullReq = pr
 			}
 		}
 	})

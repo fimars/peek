@@ -23,6 +23,7 @@ import (
 	"github.com/egoist/mygo/plugins/updater/native"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
+	"github.com/egoist/mygo/ui/markdown"
 )
 
 // The modes of the window: the files the chosen commit changes, with
@@ -45,9 +46,16 @@ type app struct {
 	// branchURL is the branch's page on the code host, which the button
 	// opens over the repository's where there is one.
 	branchURL string
-	// pullURL is the page of the branch's pull request, which the button
-	// opens over the branch's, as read for the branch's page pullURLFor.
-	pullURL, pullURLFor string
+	// pullReq is the branch's pull request, nil for none, as read for the
+	// branch's page pullFor: the button opens its page over the branch's,
+	// and the branch's changes show it over their diffs.
+	pullReq     *git.BranchPull
+	pullFor     string
+	pullReading bool // gh is asked for it
+	// pullMarkdown shows its description, and checksOpen tells, by its
+	// page, whether its checks list where the user chose.
+	pullMarkdown *markdown.Options
+	checksOpen   map[string]bool
 	// inline runs loads on the UI thread, as tests and snapshots want,
 	// and redraw asks for the frame a window's Update would draw then.
 	// Those a pass starts wait in published for the next, as a window's
@@ -93,6 +101,8 @@ type app struct {
 	endTools                        ui.Handle // the controls at the end of the text's toolbar
 	endWidth                        float32   // their width, as last laid out
 	alert                           alertState
+	confirming                      confirmState
+	discarding                      bool // the changes are being discarded
 	// shot is the view the app is to open at, for screenshots, nil for
 	// none or once it is shown.
 	shot *shot
@@ -342,6 +352,7 @@ func (a *app) view(c *ui.Context) {
 	a.askPopover(c)
 	a.branchSwitcher(c)
 	a.alerts(c)
+	a.confirmations(c)
 	a.sync(c)
 	// Over the window's material the sidebar shows it, and the other
 	// columns draw their own backgrounds, as AppKit's source lists do: the
@@ -862,6 +873,12 @@ func (a *app) commitItem(c *ui.Context) func(cm git.Commit) ui.SourceListItem {
 			if cm.Hash != git.Worktree {
 				tint, glyph, name = purple, branchIcon, "range"
 				it.Tooltip = cm.Body
+				if pr := a.pullReq; pr != nil && a.pullFor == a.branchURL {
+					if b, ok := checksBadge(c, pr); ok {
+						it.Badges = []ui.SourceListBadge{b}
+						it.Tooltip += "\n\n#" + strconv.Itoa(pr.Number) + ": " + checksSummary(pr)
+					}
+				}
 			}
 			it.Subtitle = cm.Summary
 			it.Image = a.drawn(fmt.Sprint(name, dark), 30, func(c *ui.Context) {
@@ -1138,6 +1155,8 @@ func (a *app) treeItem(c *ui.Context, tree *pathTree) func(p string) ui.SourceLi
 		it.Menu = func(m *ui.Menu) {
 			if tree == &a.changeTree {
 				a.readMenu(m, p)
+				m.Separator()
+				a.discardMenu(m, a.diffsUnder(p))
 				if isGroup(p) {
 					return
 				}
@@ -1284,11 +1303,12 @@ func (a *app) sync(c *ui.Context) {
 	}
 	switch a.mode {
 	case modeChanges:
-		// A file chosen in the tree shows its diff, read or not.
+		// A file chosen in the tree shows its diff, read or not, folded or
+		// not.
 		if p := a.changeTree.chosen(); p != "" && !a.changeTree.isDir(p) && p != a.file && a.commitRow == a.loadedRow {
 			a.file = p
 			if d := a.diffOf[p]; d != nil {
-				d.opened = d.read
+				d.flipped = d.read
 			}
 			a.scrollToFile(p)
 		} else {
@@ -1399,7 +1419,7 @@ func (a *app) loadCommits() {
 			a.canPush, a.behind, a.upstream, a.dirty = h.canPush, h.behind, h.upstream, len(h.changes)
 			a.updateReviewSource(h.review, h.reviewErr)
 			a.updateBranchReview(h.branchReview)
-			a.readPullURL(false)
+			a.readPullRequest(false)
 			if len(h.commits) > 0 {
 				a.commitRow = landingRow(h)
 				if row, ok := a.keptRow(); ok {

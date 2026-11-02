@@ -26,14 +26,16 @@ type fileDiff struct {
 	stale   bool // the file may have changed since it loaded
 	// patch marks a diff of the patch's lines alone, as of a file too
 	// large to show whole, whose lines are not numbered as the file's.
-	patch  bool
-	deps   dependencyNotes // what npmx found of a manifest's new text
-	read   bool            // marked read: its diff folds away under its header
-	opened bool            // read, its diff shown again by a click on its header
+	patch bool
+	deps  dependencyNotes // what npmx found of a manifest's new text
+	read  bool            // marked read: its diff folds away under its header
+	// flipped marks a diff shown the other way from its mark by a click
+	// on its header: a read one shown, or one not read folded.
+	flipped bool
 }
 
 // folded reports whether the diff folds away under its header.
-func (d *fileDiff) folded() bool { return d.read && !d.opened }
+func (d *fileDiff) folded() bool { return d.read != d.flipped }
 
 // diffRowKey keys a file's row of the stacked diffs.
 type diffRowKey struct {
@@ -122,7 +124,7 @@ func (a *app) entryKey(hash string) string {
 
 // setRead marks the file's diff read or not, for as long as the app runs.
 func (a *app) setRead(d *fileDiff, read bool) {
-	d.read, d.opened = read, false
+	d.read, d.flipped = read, false
 	if a.read == nil {
 		a.read = map[string]bool{}
 	}
@@ -257,11 +259,17 @@ func (a *app) releaseFarDiffs() {
 }
 
 // scrollToFile shows the file's diff at the top of the column, as a click
-// on it in the tree asks.
+// on it in the tree asks: the first's with the message over it, the top
+// of the column, as the message, a pull request's read later, would
+// otherwise grow above it, out of sight.
 func (a *app) scrollToFile(p string) {
 	if i := a.diffIndex(p); i >= 0 {
 		a.scrollTarget = i
-		a.diffList.ScrollTo(headerRow(i), ui.Start)
+		row := headerRow(i)
+		if i == 0 {
+			row = 0
+		}
+		a.diffList.ScrollTo(row, ui.Start)
 	}
 }
 
@@ -339,12 +347,19 @@ func (a *app) diffPane(c *ui.Context) {
 
 // commitMessage is the first row of the diffs, as Mail shows a message's
 // header over it: who made the commit and when, its hash, and its message,
-// to read at a glance, its subject being the jump bar's. The work tree and
-// the branch's changes have none.
+// to read at a glance, its subject being the jump bar's. The work tree has
+// none, and the branch's changes their pull request's, where there is one.
 func (a *app) commitMessage(c *ui.Context) {
+	if pr := a.shownPull(); pr != nil {
+		a.pullHeader(c, pr)
+		return
+	}
 	cm, ok := a.current()
 	if !ok || cm.Hash == git.Worktree || git.IsRange(cm.Hash) {
-		ui.Row(c).FillWidth().Height(0)
+		// A line, not nothing, for the list to keep its place by it at the
+		// top: a pull request's header, read later, then grows down from
+		// it, not up out of sight.
+		ui.Row(c).FillWidth().Height(1)
 		return
 	}
 	t := c.Theme()
@@ -411,20 +426,18 @@ func (a *app) diffHeader(c *ui.Context, d *fileDiff) {
 		m.Separator()
 		a.linesMenu(c, m, d)
 		m.Separator()
+		a.discardMenu(m, []*fileDiff{d})
+		m.Separator()
 		a.fileMenu(services, m, ch.Path, false)
 	})
-	if d.read {
-		// A click on a read file's bar shows its diff again, or folds it,
-		// as GitHub's Viewed files open: still marked read. The arrow,
-		// not a pointing hand, tells it, as the hand is for links on a Mac.
-		bar.KeepFocus().OnClick(func() { d.opened = !d.opened })
-	}
+	// A click on a file's bar folds its diff or shows it again, as
+	// GitHub's do, leaving its mark as it was. The arrow, not a pointing
+	// hand, tells it, as the hand is for links on a Mac.
+	bar.KeepFocus().OnClick(func() { d.flipped = !d.flipped })
 	bar.Children(func() {
-		if d.read {
-			chevron := ui.Icon(c, chevronIcon).Size(10, 10).Shrink(0).TextColor(t.TextMuted)
-			if d.folded() {
-				chevron.Rotate(-90)
-			}
+		chevron := ui.Icon(c, chevronIcon).Size(10, 10).Shrink(0).TextColor(t.TextMuted)
+		if d.folded() {
+			chevron.Rotate(-90)
 		}
 		fileicons.View(c, ch.Path, 16, t.TextMuted, ui.Color{})
 		// The name first, then where it is, as Xcode's jump bar.
@@ -524,7 +537,10 @@ func (a *app) loadDiff(d *fileDiff) {
 				// sideways would drift with the slant of every vertical
 				// swipe on a touchpad, the list taking the swipe's height
 				// and the diff under the pointer its width.
-				Wrap:             true,
+				Wrap: true,
+				// A click expands 20 unchanged lines, as GitHub's: 100 ran
+				// past the view, and the change with them.
+				ExpansionLines:   20,
 				IgnoreWhitespace: prefs.IgnoreWhitespace,
 				Font:             prefs.codeFont(),
 				Theme:            codeTheme(prefs.CodeTheme, false), // the window's appearance's as it shows
